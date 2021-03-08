@@ -83,6 +83,8 @@ sub print_run() {
 
 #
 # Randomize array order.
+# Thanks to Perl.LiveJournal.com
+# https://perl.livejournal.com/101830.html
 #
 sub rand_array {
     my @array = @_;
