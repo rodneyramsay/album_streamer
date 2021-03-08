@@ -1,0 +1,101 @@
+#!/usr/bin/perl
+
+use Getopt::Std;
+getopts("a:c:m:r");
+
+if(defined($opt_m)) {
+    $mount = $opt_m;
+}
+else {
+    $mount = "/mnt/wd_my_cloud";
+}
+
+$run = 1;
+@artists = ();
+@categories = ();
+@albums = ();
+
+
+
+#
+# Directory structure organization:
+#
+#   Music/<Category>/<Artist>/<Album>/<Track>.flac
+#
+while(1) {
+    $run = 0;
+
+    print("Building Album List");
+
+    foreach $category (`ls $mount/`) {
+	chomp($category);
+
+	if(!defined($opt_c) || ($category =~ m/$opt_c/)) {
+	    push(@categories, $category);
+
+	    foreach $artist (`ls $mount/$category/`) {
+		chomp($artist);
+
+		#
+		# If -a option only keep artists matching name..
+		#
+		if(!defined($opt_a) || ($artist =~ m/$opt_a/)) {
+		    push(@artists, $artist);
+
+		    foreach $album (`ls $mount/$category/$artist`) {
+			print(".");
+
+			chomp($album);
+			push(@album_names, $album);
+			push(@{$albums{$artist}}, $album);
+			push(@albums, "${mount}/${category}/${artist}/${album}");
+		    }
+		}
+	    }
+	}
+    }
+
+    print("\n\n========================== YASS! ==================================\n\n");
+
+    if(defined($opt_r)) {
+	@albums = &rand_array(@albums);
+    }
+
+    #
+    # Loop through albums and play all tracks in album folder.
+    #
+    foreach $play_album (@albums) {
+	&print_run("play ${play_album}/*.flac");
+    }
+}
+
+#
+# Print command and run it.
+#
+sub print_run() {
+    ($cmd) = (@_);
+
+    print("$cmd\n");
+
+    system($cmd);
+}
+    
+
+#
+# Randomize array order.
+#
+sub rand_array {
+    my @array = @_;
+    my @rand = undef;
+    $seed = $#array + 1;
+    my $randnum = int(rand($seed));
+    $rand[$randnum] = shift(@array);
+    while (1) {
+	my $randnum = int(rand($seed));
+	if ($rand[$randnum] eq undef) {
+	    $rand[$randnum] = shift(@array);
+	}
+	last if ($#array == -1);
+    }
+    return @rand;
+}
