@@ -61,10 +61,18 @@ while(1) {
 	@albums = &rand_array(@albums);
     }
 
+    &play_albums(@albums);
+}
+
+sub play_albums() {
+
+    my (@albums) = (@_);
+
     #
     # Loop through albums and play all tracks in album folder.
     #
-    foreach $play_album (@albums) {
+    foreach $ii (0 .. $#albums) {
+	$play_album = $albums[$ii];
 	&print_run("play ${play_album}/*.flac");
     }
 }
