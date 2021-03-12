@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 
 use Getopt::Std;
-getopts("a:c:m:r");
+getopts("a:c:l:m:prv");
 
 if(defined($opt_m)) {
     $mount = $opt_m;
@@ -15,6 +15,10 @@ $run = 1;
 @categories = ();
 @albums = ();
 
+@play_artists = ();
+@play_categories = ();
+@play_albums = ();
+
 
 
 #
@@ -22,72 +26,125 @@ $run = 1;
 #
 #   Music/<Category>/<Artist>/<Album>/<Track>.flac
 #
-while(1) {
-    $run = 0;
+while($run) {
+   $run = 0;
 
-    print("Building Album List");
+   print("Building Album List");
 
-    foreach $category (`ls $mount/`) {
-	chomp($category);
 
-	if(!defined($opt_c) || ($category =~ m/$opt_c/)) {
-	    push(@categories, $category);
+   foreach $category (`ls $mount/`) {
+      chomp($category);
 
-	    foreach $artist (`ls $mount/$category/`) {
-		chomp($artist);
+      push(@categories, $category);
 
-		#
-		# If -a option only keep artists matching name..
-		#
-		if(!defined($opt_a) || ($artist =~ m/$opt_a/)) {
-		    push(@artists, $artist);
+      if(!defined($opt_c) || ($category =~ m/$opt_c/)) {
+	 $play_categories{$category} = $category;
+	 push(@play_categories, $category);
+      }
 
-		    foreach $album (`ls $mount/$category/$artist`) {
-			print(".");
 
-			chomp($album);
-			push(@album_names, $album);
-			push(@{$albums{$artist}}, $album);
-			push(@albums, "${mount}/${category}/${artist}/${album}");
-		    }
-		}
+      foreach $artist (`ls $mount/$category/`) {
+	 chomp($artist);
+
+	 push(@artists, $artist);
+
+	 #
+	 # If -a option only want to play artists matching name..
+	 #
+	 if(defined($play_categories{$category}) &&
+		    (!defined($opt_a) || ($artist =~ m/$opt_a/))) {
+
+	    $play_artists{$artist} = $artist;
+	    push(@play_artists, $artist);
+	 }
+
+	 
+	 foreach $album (`ls $mount/$category/$artist`) {
+	    print(".");
+
+	    chomp($album);
+
+	    if($album =~ m/disk_?(\d+)/i) {
+	       $disk_num = $1;
+	       next unless($disk_num =~ m/0*1/);
 	    }
-	}
-    }
+	    
+	    push(@album_names, $album);
 
-    print("\n\n========================== YASS! ==================================\n\n");
+	    push(@{$albums{$category}}, "${mount}/${category}/${artist}/${album}");
+	    push(@{$albums{$artist}}, "${mount}/${category}/${artist}/${album}");
 
-    if(defined($opt_r)) {
-	@albums = &rand_array(@albums);
-    }
+	    push(@albums, "${mount}/${category}/${artist}/${album}");
 
-    &play_albums(@albums);
+	    #
+	    # -l option only play matching albums.
+	    #
+	    if(defined($play_categories{$category}) && defined($play_artists{$artist})) {
+	       if(!defined($opt_l) || ($album =~ m/$opt_l/)) {
+		  push(@play_albums, "${mount}/${category}/${artist}/${album}");
+	       }
+	    }
+	 }
+      }
+   }
+
+   print("\n\n========================== YASS! ==================================\n\n");
+
+   if(defined($opt_r)) {
+      @play_albums = &rand_array(@play_albums);
+   }
+ 
+   if(defined($opt_v)) {
+      foreach $play_album (@play_albums) {
+	 print("CUESHEET:$play_album\n");
+      }
+   }
+
+   &play_albums(@play_albums);
+
+   last if(defined($opt_p));
 }
 
+
+#
+#
+#
 sub play_albums() {
 
-    my (@albums) = (@_);
+   my (@albums) = (@_);
 
-    #
-    # Loop through albums and play all tracks in album folder.
-    #
-    foreach $ii (0 .. $#albums) {
-	$play_album = $albums[$ii];
-	&print_run("play ${play_album}/*.flac");
-    }
+   #
+   # Loop through albums and play all tracks in album folder.
+   #
+   foreach $ii (0 .. $#albums) {
+      print("Album Name: $albums[$ii]\n");
+      $play_album = $albums[$ii];
+
+      if($play_album =~ m/(dis(c|k)_?(\d+))/i) {
+	 ($disc_name, $ck, $disc_num) = ($1, $2, $3);
+
+	 print("DISC_NAME=$disc_name DISC_NUM=$disc_num\n");
+	 
+	 $play_album =~ s/$disc_num//;
+      }
+
+      unless(defined($opt_p)) {
+	 &print_run("play ${play_album}*/*.flac");
+      }
+   }
 }
 
 #
 # Print command and run it.
 #
 sub print_run() {
-    ($cmd) = (@_);
+   ($cmd) = (@_);
 
-    print("$cmd\n");
+   print("$cmd\n");
 
-    system($cmd);
+   system($cmd);
 }
-    
+
 
 #
 # Randomize array order.
@@ -95,17 +152,17 @@ sub print_run() {
 # https://perl.livejournal.com/101830.html
 #
 sub rand_array {
-    my @array = @_;
-    my @rand = undef;
-    $seed = $#array + 1;
-    my $randnum = int(rand($seed));
-    $rand[$randnum] = shift(@array);
-    while (1) {
-	my $randnum = int(rand($seed));
-	if ($rand[$randnum] eq undef) {
-	    $rand[$randnum] = shift(@array);
-	}
-	last if ($#array == -1);
-    }
-    return @rand;
+   my @array = @_;
+   my @rand = undef;
+   $seed = $#array + 1;
+   my $randnum = int(rand($seed));
+   $rand[$randnum] = shift(@array);
+   while (1) {
+      my $randnum = int(rand($seed));
+      if ($rand[$randnum] eq undef) {
+	 $rand[$randnum] = shift(@array);
+      }
+      last if ($#array == -1);
+   }
+   return @rand;
 }
