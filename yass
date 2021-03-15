@@ -1,5 +1,5 @@
 #!/usr/bin/perl
-
+use Proc::Killfam;
 use Getopt::Std;
 getopts("a:c:l:m:prv");
 
@@ -11,6 +11,8 @@ else {
 }
 
 $run = 1;
+$pid = 0;
+
 @artists = ();
 @categories = ();
 @albums = ();
@@ -71,6 +73,9 @@ while($run) {
 	    
 	    push(@album_names, $album);
 
+	    #
+	    # Build lists of albums.
+	    #
 	    push(@{$albums{$category}}, "${mount}/${category}/${artist}/${album}");
 	    push(@{$albums{$artist}}, "${mount}/${category}/${artist}/${album}");
 
@@ -129,7 +134,25 @@ sub play_albums() {
       }
 
       unless(defined($opt_p)) {
-	 &print_run("play ${play_album}*/*.flac");
+
+	 $sub_id = &print_run("play ${play_album}*/*.flac");
+      }
+
+	 
+      my $key_pressed = 'c';
+      while($key_pressed ne 'x') {
+	 $key_pressed = getc(STDIN);
+	 print("KEY PRESSED:$key_pressed\n");
+
+	 if($key_pressed eq 'x') {
+	    print("Killing:$sub_id\n");
+	    killfam 9, $sub_id;
+	    waitpid $sub_id, 0;
+	    exit;
+	 }
+      }
+      if($sub_id) {
+	 waitpid $sub_id, 0;
       }
    }
 }
@@ -142,7 +165,16 @@ sub print_run() {
 
    print("$cmd\n");
 
-   system($cmd);
+   $pid = fork;
+   die "Failed to fork $!\n" unless defined $pid;
+   
+   if($pid == 0) {
+
+      system($cmd);
+      exit;
+   }
+
+   return $pid;
 }
 
 
