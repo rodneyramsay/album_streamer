@@ -1,7 +1,9 @@
 #!/usr/bin/perl
 use Proc::Killfam;
 use Getopt::Std;
-getopts("a:c:l:m:prv");
+use Term::ReadKey;
+
+getopts("a:c:l:m:pqr");
 
 if(defined($opt_m)) {
     $mount = $opt_m;
@@ -29,29 +31,45 @@ $pid = 0;
 #   Music/<Category>/<Artist>/<Album>/<Track>.flac
 #
 while($run) {
-   $run = 0;
+;   $run = 0;
 
    print("Building Album List");
 
 
+   #
+   # Check category directories
+   #
    foreach $category (`ls $mount/`) {
       chomp($category);
 
+      #
+      # List of all categories for manipulating play list later.
+      #
       push(@categories, $category);
 
+      #
+      # List of categories to play now.
+      #
       if(!defined($opt_c) || ($category =~ m/$opt_c/)) {
 	 $play_categories{$category} = $category;
 	 push(@play_categories, $category);
       }
 
 
+      #
+      # Check artist directories
+      #
       foreach $artist (`ls $mount/$category/`) {
 	 chomp($artist);
 
+	 #
+	 # List of all artists
+	 #
 	 push(@artists, $artist);
 
 	 #
 	 # If -a option only want to play artists matching name..
+	 # List of artists to play now.
 	 #
 	 if(defined($play_categories{$category}) &&
 		    (!defined($opt_a) || ($artist =~ m/$opt_a/))) {
@@ -60,17 +78,27 @@ while($run) {
 	    push(@play_artists, $artist);
 	 }
 
-	 
+
+	 #
+	 # Check album directories
+	 #
 	 foreach $album (`ls $mount/$category/$artist`) {
 	    print(".");
 
 	    chomp($album);
 
+	    #
+	    # For multi-disk albums, only remember disc 1.
+	    # Play multi-disk albums all together later...
+	    #
 	    if($album =~ m/disk_?(\d+)/i) {
 	       $disk_num = $1;
 	       next unless($disk_num =~ m/0*1/);
 	    }
-	    
+
+	    #
+	    # All Album names
+	    #
 	    push(@album_names, $album);
 
 	    #
@@ -79,6 +107,9 @@ while($run) {
 	    push(@{$albums{$category}}, "${mount}/${category}/${artist}/${album}");
 	    push(@{$albums{$artist}}, "${mount}/${category}/${artist}/${album}");
 
+	    #
+	    # List of album full paths.
+	    #
 	    push(@albums, "${mount}/${category}/${artist}/${album}");
 
 	    #
@@ -93,13 +124,24 @@ while($run) {
       }
    }
 
+   #
+   # Start streaming albums
+   #
    print("\n\n========================== YASS! ==================================\n\n");
 
+   #
+   # Randomize array
+   #
    if(defined($opt_r)) {
       @play_albums = &rand_array(@play_albums);
+      @play_albums = &rand_array(@play_albums);
+      @play_albums = &rand_array(@play_albums);
    }
- 
-   if(defined($opt_v)) {
+
+   #
+   # Print out cuesheet unless quiet mode.
+   #
+   unless(defined($opt_q)) {
       foreach $play_album (@play_albums) {
 	 print("CUESHEET:$play_album\n");
       }
@@ -125,6 +167,10 @@ sub play_albums() {
       print("Album Name: $albums[$ii]\n");
       $play_album = $albums[$ii];
 
+      #
+      # Does this album end with disk_<n>?
+      # Cut off the disk number and play them all
+      #
       if($play_album =~ m/(dis(c|k)_?(\d+))/i) {
 	 ($disc_name, $ck, $disc_num) = ($1, $2, $3);
 
@@ -135,24 +181,64 @@ sub play_albums() {
 
       unless(defined($opt_p)) {
 
+	 #
+	 # Fork off process to stream music. Use <Album_Name>* to catch all disc numbers.
+	 #
 	 $sub_id = &print_run("play ${play_album}*/*.flac");
       }
 
-	 
-      my $key_pressed = 'c';
-      while($key_pressed ne 'x') {
-	 $key_pressed = getc(STDIN);
-	 print("KEY PRESSED:$key_pressed\n");
+      #
+      # Master process wait for user input.
+      #
+      # x = exit
+      # n = next album in queue (Need to fix for last album in queue)
+      # t = next track on album (Need to fix for last track of album)
+      #
+      if($sub_id > 0) {
+	 my $key_pressed = 'c';
+	 while($key_pressed ne 'x') {
 
-	 if($key_pressed eq 'x') {
-	    print("Killing:$sub_id\n");
-	    killfam 9, $sub_id;
-	    waitpid $sub_id, 0;
-	    exit;
+	    #
+	    # Master process - Wait for one key input.
+	    #
+	    ReadMode 'cbreak';
+	    $key_pressed = ReadKey(0);
+	    ReadMode 'normal';
+	    
+	    if($key_pressed) {
+
+	       print("KEY PRESSED:$key_pressed SUB_ID:$sub_id\n");
+
+	       #
+	       # x for exit. Kill streamer process and quit.
+	       #
+	       if($key_pressed eq 'x') {
+		  print("Killing:$sub_id\n");
+		  killfam 9, $sub_id;
+		  waitpid $sub_id, 0;
+		  exit;
+	       }
+	       #
+	       # n for next album. Kill streamer process and go back around to top of loop.
+	       #
+	       elsif($key_pressed eq 'n') {
+		  print("Next Album\n");
+		  killfam 9, $sub_id;
+		  last;
+	       }
+	       #
+	       # Next track - send Ctrl-C to SoX to skip to next track.
+	       #
+	       elsif($key_pressed eq 't') {
+		  print("Next Track\n");
+		  killfam 2, $sub_id;
+	       }
+	    }
 	 }
-      }
-      if($sub_id) {
-	 waitpid $sub_id, 0;
+
+	 if($sub_id) {
+	    waitpid $sub_id, 0;
+	 }
       }
    }
 }
