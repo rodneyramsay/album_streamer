@@ -31,7 +31,7 @@ $pid = 0;
 #   Music/<Category>/<Artist>/<Album>/<Track>.flac
 #
 while($run) {
-;   $run = 0;
+#   $run = 0;
 
    print("Building Album List");
 
@@ -101,16 +101,21 @@ while($run) {
 	    #
 	    push(@album_names, $album);
 
+	    $album_path = "${mount}/${category}/${artist}/${album}";
+
 	    #
 	    # Build lists of albums.
 	    #
-	    push(@{$albums{$category}}, "${mount}/${category}/${artist}/${album}");
-	    push(@{$albums{$artist}}, "${mount}/${category}/${artist}/${album}");
+	    push(@{$albums{$category}}, $album_path);
+	    push(@{$albums{$artist}}, $album_path);
 
 	    #
 	    # List of album full paths.
 	    #
-	    push(@albums, "${mount}/${category}/${artist}/${album}");
+	    push(@albums, $album_path);
+
+#	    $last_track = `ls $album_path | tail -1`;
+#	    $last_track{$album_path} = "${mount}/${category}/${artist}/${album}/${last_track}";
 
 	    #
 	    # -l option only play matching albums.
@@ -231,7 +236,17 @@ sub play_albums() {
 	       #
 	       elsif($key_pressed eq 't') {
 		  print("Next Track\n");
-		  killfam 2, $sub_id;
+		  #
+		  # Last track of the album jump to next album.
+		  #
+		  if($current_track == $last_track{$album}) {
+		  }
+		  #
+		  # Send Ctrl-C
+		  #
+		  else {
+		     killfam 2, $sub_id;
+		  }
 	       }
 	    }
 	 }
