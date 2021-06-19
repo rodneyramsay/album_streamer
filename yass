@@ -239,7 +239,7 @@ sub play_albums() {
 		  #
 		  # Last track of the album jump to next album.
 		  #
-		  if($current_track == $last_track{$album}) {
+		  if($current_track eq $last_track{$album}) {
 		  }
 		  #
 		  # Send Ctrl-C
