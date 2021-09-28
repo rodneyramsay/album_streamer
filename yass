@@ -3,6 +3,14 @@ use Proc::Killfam;
 use Getopt::Std;
 use Term::ReadKey;
 
+
+$usage =
+    "yass [-c <category>] [-a <artist>] [-l <album>] [-m <mount>] [-p] [-q] [-r]\n" .
+    "\n" .
+    "\n" .
+    "\n\n";
+    
+
 getopts("a:c:l:m:pqr");
 
 if(defined($opt_m)) {
@@ -272,7 +280,7 @@ sub print_run() {
    if($pid == 0) {
 
       system($cmd);
-      exit;
+      return $pid;
    }
 
    return $pid;
