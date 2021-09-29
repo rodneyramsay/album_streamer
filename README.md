@@ -23,3 +23,5 @@ The goal is to have a web front end that help manage things but
 for now, album_sreamer loops though all music in randomized album
 order.
 
+Use 'export AUDIODEV=hw:1' to select sound card #1 for sox playback.
+
