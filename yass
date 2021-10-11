@@ -1,7 +1,11 @@
 #!/usr/bin/perl
+
+
+use POSIX ":sys_wait_h";
 use Proc::Killfam;
 use Getopt::Std;
 use Term::ReadKey;
+use Time::HiRes;
 
 
 $usage =
@@ -9,9 +13,14 @@ $usage =
     "\n" .
     "\n" .
     "\n\n";
+
+if(defined($opt_h)) {
+    print $usage;
+    exit;
+}
     
 
-getopts("a:c:l:m:pqr");
+getopts("a:c:hl:m:pqr");
 
 if(defined($opt_m)) {
     $mount = $opt_m;
@@ -39,10 +48,8 @@ $pid = 0;
 #   Music/<Category>/<Artist>/<Album>/<Track>.flac
 #
 while($run) {
-#   $run = 0;
 
-   print("Building Album List");
-
+    print("Building Album List");
 
    #
    # Check category directories
@@ -140,7 +147,7 @@ while($run) {
    #
    # Start streaming albums
    #
-   print("\n\n========================== YASS! ==================================\n\n");
+   print("\n\n======================== YASS! ================================\n\n");
 
    #
    # Randomize array
@@ -193,26 +200,53 @@ sub play_albums() {
       }
 
       unless(defined($opt_p)) {
+	  #
+	  # Fork off process to stream music.
+	  # Use <Album_Name>* to catch all disc numbers.
+	  #
+	  $play_id = &print_run("play ${play_album}*/*.flac");
 
-	 #
-	 # Fork off process to stream music. Use <Album_Name>* to catch all disc numbers.
-	 #
-	 $sub_id = &print_run("play ${play_album}*/*.flac");
+	  #
+	  # Fork process to wait for user input
+	  #
+	  $input_id = &input_handler($$, $play_id);
+
+	  #
+	  # Wiat for streaming to finish for this lp
+	  #
+	  waitpid $play_id, 0;
+
+	  killfam 9, $input_id;
+	  waitpid $input_id, 0;
       }
+   }
+}
 
-      #
-      # Master process wait for user input.
-      #
-      # x = exit
-      # n = next album in queue (Need to fix for last album in queue)
-      # t = next track on album (Need to fix for last track of album)
-      #
-      if($sub_id > 0) {
-	 my $key_pressed = 'c';
-	 while($key_pressed ne 'x') {
+#
+# Fork process to wait for keyboard input.
+# Send signals to play process for next track, etc.
+#
+sub input_handler() {
+    ($parent_id, $play_id) = (@_);
+
+    my $pid = fork;
+    die "Failed for fork input handler\n" unless defined $pid;
+
+    #
+    # Child Process Only
+    #
+    if($pid == 0) {
+	#
+	#
+	# x = exit
+	# n = next album in queue (Need to fix for last album in queue)
+	# t = next track on album (Need to fix for last track of album)
+	#
+	my $key_pressed = 'c';
+	while(1) {
 
 	    #
-	    # Master process - Wait for one key input.
+	    # Child process - Wait for one key input.
 	    #
 	    ReadMode 'cbreak';
 	    $key_pressed = ReadKey(0);
@@ -220,51 +254,53 @@ sub play_albums() {
 	    
 	    if($key_pressed) {
 
-	       print("KEY PRESSED:$key_pressed SUB_ID:$sub_id\n");
+		print("KEY PRESSED:$key_pressed PARENT=$parent_id, PLAY_ID=$play_id\n");
 
-	       #
-	       # x for exit. Kill streamer process and quit.
-	       #
-	       if($key_pressed eq 'x') {
-		  print("Killing:$sub_id\n");
-		  killfam 9, $sub_id;
-		  waitpid $sub_id, 0;
-		  exit;
-	       }
-	       #
-	       # n for next album. Kill streamer process and go back around to top of loop.
-	       #
-	       elsif($key_pressed eq 'n') {
-		  print("Next Album\n");
-		  killfam 9, $sub_id;
-		  last;
-	       }
-	       #
-	       # Next track - send Ctrl-C to SoX to skip to next track.
-	       #
-	       elsif($key_pressed eq 't') {
-		  print("Next Track\n");
-		  #
-		  # Last track of the album jump to next album.
-		  #
-		  if($current_track eq $last_track{$album}) {
-		  }
-		  #
-		  # Send Ctrl-C
-		  #
-		  else {
-		     killfam 2, $sub_id;
-		  }
-	       }
+		#
+		# x for exit. Kill streamer process and quit.
+		#
+		if($key_pressed eq 'x') {
+		    print("Killing:$play_id\n");
+		    killfam 9, $play_id;
+		    waitpid($play_id, 0);
+
+		    killfam 9, $parent_id;
+		    waitpid($parent_id, 0);
+		    exit;
+		}
+		#
+		# n for next album. Kill streamer process
+		#
+		elsif($key_pressed eq 'n') {
+		    print("Next Album\n");
+		    killfam 9, $play_id;
+		    waitpid($play_id, 0);
+		    exit;
+		}
+		#
+		# Next track - send Ctrl-C to SoX to skip to next track.
+		#
+		elsif($key_pressed eq 't') {
+		    print("Next Track\n");
+
+		    #
+		    # Send Ctrl-C
+		    #
+		    killfam 2, $play_id;
+		    Time::HiRes::usleep(1200);
+		}
 	    }
-	 }
-
-	 if($sub_id) {
-	    waitpid $sub_id, 0;
-	 }
-      }
-   }
+	}
+	exit;
+    }
+    #
+    # Main process. Return spawned PID number.
+    #
+    else {
+	return $pid;
+    }
 }
+
 
 #
 # Print command and run it.
@@ -274,13 +310,16 @@ sub print_run() {
 
    print("$cmd\n");
 
-   $pid = fork;
+   my $pid = fork;
    die "Failed to fork $!\n" unless defined $pid;
-   
+
+   #
+   # Child process only.
+   #
    if($pid == 0) {
 
       system($cmd);
-      return $pid;
+      exit;
    }
 
    return $pid;
