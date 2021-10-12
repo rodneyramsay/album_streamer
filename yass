@@ -12,6 +12,10 @@ $usage =
     "yass [-c <category>] [-a <artist>] [-l <album>] [-m <mount>] [-p] [-q] [-r]\n" .
     "\n" .
     "\n" .
+    "In program control keys:\n\n" .
+    "   n - Next LP\n" .
+    "   t - Next Track\n" .
+    "   x - Exit\n" .
     "\n\n";
 
 if(defined($opt_h)) {
@@ -29,6 +33,12 @@ else {
     $mount = "/mnt/wd_my_cloud";
 }
 
+
+
+######################################################################
+#
+#
+#
 $run = 1;
 $pid = 0;
 
@@ -216,6 +226,11 @@ sub play_albums() {
 	  #
 	  waitpid $play_id, 0;
 
+	  #
+	  # Kill input handler for this lp
+	  # Next lp will get a new input handler
+	  # (and a new PID to send signals)
+	  #
 	  killfam 9, $input_id;
 	  waitpid $input_id, 0;
       }
@@ -264,6 +279,7 @@ sub input_handler() {
 		    killfam 9, $play_id;
 		    waitpid($play_id, 0);
 
+		    print("Killing:$parent_id\n");
 		    killfam 9, $parent_id;
 		    waitpid($parent_id, 0);
 		    exit;
@@ -287,6 +303,12 @@ sub input_handler() {
 		    # Send Ctrl-C
 		    #
 		    killfam 2, $play_id;
+
+		    #
+		    # Wait a little bit to prevent user from sending 2
+		    # Ctrl-C in a row. 2x Ctrl-C kills sox, 1x Ctrl-C
+		    # skips to next track
+		    # 
 		    Time::HiRes::usleep(1200);
 		}
 	    }
@@ -303,11 +325,14 @@ sub input_handler() {
 
 
 #
-# Print command and run it.
+# Print command and system run it.
 #
 sub print_run() {
    ($cmd) = (@_);
 
+   #
+   #
+   #
    print("$cmd\n");
 
    my $pid = fork;
@@ -322,6 +347,9 @@ sub print_run() {
       exit;
    }
 
+   #
+   # Main process, pass back new child PID
+   #
    return $pid;
 }
 
