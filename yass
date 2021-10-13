@@ -116,7 +116,7 @@ while($run) {
 	    # For multi-disk albums, only remember disc 1.
 	    # Play multi-disk albums all together later...
 	    #
-	    if($album =~ m/disk_?(\d+)/i) {
+	    if($album =~ m/dis[ck]_?(\d+)/i) {
 	       $disk_num = $1;
 	       next unless($disk_num =~ m/0*1/);
 	    }
@@ -171,10 +171,16 @@ while($run) {
    #
    # Print out cuesheet unless quiet mode.
    #
-   unless(defined($opt_q)) {
-      foreach $play_album (@play_albums) {
+    unless(defined($opt_q)) {
+
+	open(CUEFILE, ">CUESHEET.txt") or
+	    die "unable to open CUESHEET.txt\n";
+
+	foreach $play_album (@play_albums) {
 	 print("CUESHEET:$play_album\n");
-      }
+	 print(CUEFILE "CUESHEET:$play_album\n");
+	}
+	close(CUEFILE);
    }
 
    &play_albums(@play_albums);
