@@ -11,6 +11,7 @@ use Time::HiRes;
 $usage =
     "yass [-c <category>] [-a <artist>] [-l <album>] [-m <mount>] [-p] [-q] [-r]\n" .
     "\n" .
+    "<category>, <artist>, and <album> arguments can be perl regex or simple string\n" .
     "\n" .
     "In program control keys:\n\n" .
     "   n - Next LP\n" .
@@ -18,13 +19,13 @@ $usage =
     "   x - Exit\n" .
     "\n\n";
 
+getopts("a:c:hl:m:pqr");
+
 if(defined($opt_h)) {
     print $usage;
     exit;
 }
     
-
-getopts("a:c:hl:m:pqr");
 
 if(defined($opt_m)) {
     $mount = $opt_m;
@@ -278,7 +279,7 @@ sub input_handler() {
 		print("KEY PRESSED:$key_pressed PARENT=$parent_id, PLAY_ID=$play_id\n");
 
 		#
-		# x for exit. Kill streamer process and quit.
+		# x for exit. Kill parent process.
 		#
 		if($key_pressed eq 'x') {
 
@@ -288,7 +289,8 @@ sub input_handler() {
 		    exit;
 		}
 		#
-		# n for next album. Kill streamer process
+		# n for next album. Kill SoX process
+		# Loop around and pick up next lp
 		#
 		elsif($key_pressed eq 'n') {
 		    print("Next Album\n");
