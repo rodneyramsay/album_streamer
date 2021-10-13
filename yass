@@ -281,9 +281,6 @@ sub input_handler() {
 		# x for exit. Kill streamer process and quit.
 		#
 		if($key_pressed eq 'x') {
-		    print("Killing:$play_id\n");
-		    killfam 9, $play_id;
-		    waitpid($play_id, 0);
 
 		    print("Killing:$parent_id\n");
 		    killfam 9, $parent_id;
