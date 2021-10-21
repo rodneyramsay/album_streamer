@@ -203,6 +203,7 @@ sub play_albums() {
    #
    # Loop through albums and play all tracks in album folder.
    #
+   while(1) {
    for ($ii = $first_lp; $ii <= $#albums; $ii++) {
       print("Album Name: $albums[$ii]\n");
       $play_album = $albums[$ii];
@@ -244,6 +245,7 @@ sub play_albums() {
 	 killfam 9, $input_id;
 	 waitpid $input_id, 0;
       }
+   }
    }
 }
 
