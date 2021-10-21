@@ -9,29 +9,28 @@ use Time::HiRes;
 
 
 $usage =
-    "yass [-c <category>] [-a <artist>] [-l <album>] [-m <mount>] [-p] [-q] [-r]\n" .
-    "\n" .
-    "<category>, <artist>, and <album> arguments can be perl regex or simple string\n" .
-    "\n" .
-    "In program control keys:\n\n" .
-    "   n - Next LP\n" .
-    "   t - Next Track\n" .
-    "   x - Exit\n" .
-    "\n\n";
+  "yass [-c <category>] [-a <artist>] [-l <album>] [-m <mount>] [-p] [-q] [-r]\n" .
+  "\n" .
+  "<category>, <artist>, and <album> arguments can be perl regex or simple string\n" .
+  "\n" .
+  "In program control keys:\n\n" .
+  "   n - Next LP\n" .
+  "   t - Next Track\n" .
+  "   x - Exit\n" .
+  "\n\n";
 
 getopts("a:c:hl:m:pqr");
 
-if(defined($opt_h)) {
-    print $usage;
-    exit;
+if (defined($opt_h)) {
+   print $usage;
+   exit;
 }
     
 
-if(defined($opt_m)) {
-    $mount = $opt_m;
-}
-else {
-    $mount = "/mnt/wd_my_cloud";
+if (defined($opt_m)) {
+   $mount = $opt_m;
+} else {
+   $mount = "/mnt/wd_my_cloud";
 }
 
 
@@ -42,6 +41,7 @@ else {
 #
 $run = 1;
 $pid = 0;
+$first_lp = 0;
 
 @artists = ();
 @categories = ();
@@ -58,9 +58,9 @@ $pid = 0;
 #
 #   Music/<Category>/<Artist>/<Album>/<Track>.flac
 #
-while($run) {
+while ($run) {
 
-    print("Building Album List");
+   print("Building Album List");
 
    #
    # Check category directories
@@ -76,7 +76,7 @@ while($run) {
       #
       # List of categories to play now.
       #
-      if(!defined($opt_c) || ($category =~ m/$opt_c/)) {
+      if (!defined($opt_c) || ($category =~ m/$opt_c/)) {
 	 $play_categories{$category} = $category;
 	 push(@play_categories, $category);
       }
@@ -97,8 +97,8 @@ while($run) {
 	 # If -a option only want to play artists matching name..
 	 # List of artists to play now.
 	 #
-	 if(defined($play_categories{$category}) &&
-		    (!defined($opt_a) || ($artist =~ m/$opt_a/))) {
+	 if (defined($play_categories{$category}) &&
+	     (!defined($opt_a) || ($artist =~ m/$opt_a/))) {
 
 	    $play_artists{$artist} = $artist;
 	    push(@play_artists, $artist);
@@ -117,7 +117,7 @@ while($run) {
 	    # For multi-disk albums, only remember disc 1.
 	    # Play multi-disk albums all together later...
 	    #
-	    if($album =~ m/dis[ck]_?(\d+)/i) {
+	    if ($album =~ m/dis[ck]_?(\d+)/i) {
 	       $disk_num = $1;
 	       next unless($disk_num =~ m/0*1/);
 	    }
@@ -140,14 +140,14 @@ while($run) {
 	    #
 	    push(@albums, $album_path);
 
-#	    $last_track = `ls $album_path | tail -1`;
-#	    $last_track{$album_path} = "${mount}/${category}/${artist}/${album}/${last_track}";
+	    #	    $last_track = `ls $album_path | tail -1`;
+	    #	    $last_track{$album_path} = "${mount}/${category}/${artist}/${album}/${last_track}";
 
 	    #
 	    # -l option only play matching albums.
 	    #
-	    if(defined($play_categories{$category}) && defined($play_artists{$artist})) {
-	       if(!defined($opt_l) || ($album =~ m/$opt_l/)) {
+	    if (defined($play_categories{$category}) && defined($play_artists{$artist})) {
+	       if (!defined($opt_l) || ($album =~ m/$opt_l/)) {
 		  push(@play_albums, "${mount}/${category}/${artist}/${album}");
 	       }
 	    }
@@ -163,25 +163,26 @@ while($run) {
    #
    # Randomize array
    #
-   if(defined($opt_r)) {
-      @play_albums = &rand_array(@play_albums);
-      @play_albums = &rand_array(@play_albums);
-      @play_albums = &rand_array(@play_albums);
+   if (defined($opt_r)) {
+      $ii = int(rand(100)) + 1;
+      while($ii-- > 0) {
+	 @play_albums = &rand_array(@play_albums);
+      }
    }
 
    #
    # Print out cuesheet unless quiet mode.
    #
-    unless(defined($opt_q)) {
+   unless(defined($opt_q)) {
 
-	open(CUEFILE, ">CUESHEET.txt") or
-	    die "unable to open CUESHEET.txt\n";
+      open(CUEFILE, ">CUESHEET.txt") or
+	die "unable to open CUESHEET.txt\n";
 
-	foreach $play_album (@play_albums) {
-	 print("CUESHEET:$play_album\n");
-	 print(CUEFILE "CUESHEET:$play_album\n");
-	}
-	close(CUEFILE);
+      foreach $jj (0 .. $#play_albums) {
+	 printf("CUESHEET:%7d %s\n", $jj, $play_albums[$jj]);
+	 printf(CUEFILE "CUESHEET:%7d %s\n", $jj, $play_albums[$jj]);
+      }
+      close(CUEFILE);
    }
 
    &play_albums(@play_albums);
@@ -197,10 +198,12 @@ sub play_albums() {
 
    my (@albums) = (@_);
 
+   my @albums_0 = @albums;
+
    #
    # Loop through albums and play all tracks in album folder.
    #
-   foreach $ii (0 .. $#albums) {
+   for ($ii = $first_lp; $ii <= $#albums; $ii++) {
       print("Album Name: $albums[$ii]\n");
       $play_album = $albums[$ii];
 
@@ -208,38 +211,38 @@ sub play_albums() {
       # Does this album end with disk_<n>?
       # Cut off the disk number and play them all
       #
-      if($play_album =~ m/(dis(c|k)_?(\d+))/i) {
+      if ($play_album =~ m/(dis(c|k)_?(\d+))/i) {
 	 ($disc_name, $ck, $disc_num) = ($1, $2, $3);
 
 	 print("DISC_NAME=$disc_name DISC_NUM=$disc_num\n");
-	 
+
 	 $play_album =~ s/$disc_num//;
       }
 
       unless(defined($opt_p)) {
-	  #
-	  # Fork off process to stream music.
-	  # Use <Album_Name>* to catch all disc numbers.
-	  #
-	  $play_id = &print_run("play ${play_album}*/*.flac");
+	 #
+	 # Fork off process to stream music.
+	 # Use <Album_Name>*/*.flac to catch all disc numbers.
+	 #
+	 $play_id = &print_run("play ${play_album}*/*.flac");
 
-	  #
-	  # Fork process to wait for user input
-	  #
-	  $input_id = &input_handler($$, $play_id);
+	 #
+	 # Fork process to wait for user input
+	 #
+	 $input_id = &input_handler($$, $play_id);
 
-	  #
-	  # Wiat for streaming to finish for this lp
-	  #
-	  waitpid $play_id, 0;
+	 #
+	 # Wat for streaming to finish for this lp
+	 #
+	 waitpid $play_id, 0;
 
-	  #
-	  # Kill input handler for this lp
-	  # Next lp will get a new input handler
-	  # (and a new PID to send signals)
-	  #
-	  killfam 9, $input_id;
-	  waitpid $input_id, 0;
+	 #
+	 # Kill input handler for this lp
+	 # Next lp will get a new input handler
+	 # (and a new PID to send signals)
+	 #
+	 killfam 9, $input_id;
+	 waitpid $input_id, 0;
       }
    }
 }
@@ -249,83 +252,83 @@ sub play_albums() {
 # Send signals to play process for next track, etc.
 #
 sub input_handler() {
-    ($parent_id, $play_id) = (@_);
+   ($parent_id, $play_id) = (@_);
 
-    my $pid = fork;
-    die "Failed for fork input handler\n" unless defined $pid;
+   my $pid = fork;
+   die "Failed for fork input handler\n" unless defined $pid;
 
-    #
-    # Child Process Only
-    #
-    if($pid == 0) {
-	#
-	#
-	# x = exit
-	# n = next album in queue (Need to fix for last album in queue)
-	# t = next track on album (Need to fix for last track of album)
-	#
-	my $key_pressed = 'c';
-	while(1) {
+   #
+   # Child Process Only
+   #
+   if ($pid == 0) {
+      #
+      #
+      # x = exit
+      # n = next album in queue (Need to fix for last album in queue)
+      # t = next track on album (Need to fix for last track of album)
+      #
+      my $key_pressed = 'c';
+      while (1) {
+
+	 #
+	 # Child process - Wait for one key input.
+	 #
+	 ReadMode 'cbreak';
+	 $key_pressed = ReadKey(0);
+	 ReadMode 'normal';
+
+	 if ($key_pressed) {
+
+	    print("KEY PRESSED:$key_pressed PARENT=$parent_id, PLAY_ID=$play_id\n");
 
 	    #
-	    # Child process - Wait for one key input.
+	    # x for exit. Kill parent process.
 	    #
-	    ReadMode 'cbreak';
-	    $key_pressed = ReadKey(0);
-	    ReadMode 'normal';
-	    
-	    if($key_pressed) {
+	    if ($key_pressed eq 'x') {
 
-		print("KEY PRESSED:$key_pressed PARENT=$parent_id, PLAY_ID=$play_id\n");
-
-		#
-		# x for exit. Kill parent process.
-		#
-		if($key_pressed eq 'x') {
-
-		    print("Killing:$parent_id\n");
-		    killfam 9, $parent_id;
-		    waitpid($parent_id, 0);
-		    exit;
-		}
-		#
-		# n for next album. Kill SoX process
-		# Loop around and pick up next lp
-		#
-		elsif($key_pressed eq 'n') {
-		    print("Next Album\n");
-		    killfam 9, $play_id;
-		    waitpid($play_id, 0);
-		    exit;
-		}
-		#
-		# Next track - send Ctrl-C to SoX to skip to next track.
-		#
-		elsif($key_pressed eq 't') {
-		    print("Next Track\n");
-
-		    #
-		    # Send Ctrl-C
-		    #
-		    killfam 2, $play_id;
-
-		    #
-		    # Wait a little bit to prevent user from sending 2
-		    # Ctrl-C in a row. 2x Ctrl-C kills sox, 1x Ctrl-C
-		    # skips to next track
-		    # 
-		    Time::HiRes::usleep(1200);
-		}
+	       print("Killing:$parent_id\n");
+	       killfam 9, $parent_id;
+	       waitpid($parent_id, 0);
+	       exit;
 	    }
-	}
-	exit;
-    }
-    #
-    # Main process. Return spawned PID number.
-    #
-    else {
-	return $pid;
-    }
+	    #
+	    # n for next album. Kill SoX process
+	    # Loop around and pick up next lp
+	    #
+	    elsif ($key_pressed eq 'n') {
+	       print("Next Album\n");
+	       killfam 9, $play_id;
+	       waitpid($play_id, 0);
+	       exit;
+	    }
+	    #
+	    # Next track - send Ctrl-C to SoX to skip to next track.
+	    #
+	    elsif ($key_pressed eq 't') {
+	       print("Next Track\n");
+
+	       #
+	       # Send Ctrl-C
+	       #
+	       killfam 2, $play_id;
+
+	       #
+	       # Wait a little bit to prevent user from sending 2
+	       # Ctrl-C in a row. 2x Ctrl-C kills sox, 1x Ctrl-C
+	       # skips to next track
+	       # 
+	       Time::HiRes::usleep(1200);
+	    }
+	 }
+      }
+      exit;
+   }
+   #
+   # Main process. Return spawned PID number.
+   #
+   else {
+      return $pid;
+   }
 }
 
 
@@ -346,7 +349,7 @@ sub print_run() {
    #
    # Child process only.
    #
-   if($pid == 0) {
+   if ($pid == 0) {
 
       system($cmd);
       exit;
