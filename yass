@@ -9,25 +9,25 @@ use Time::HiRes;
 
 
 $usage =
-  "yass [-c <category>] [-a <artist>] [-l <album>] [-m <mount>] [-p] [-q] [-r]\n" .
-  "\n" .
-  "<category>, <artist>, and <album> arguments can be perl regex or simple string\n" .
-  "\n" .
-  "In program control keys:\n\n" .
-  "   n - Next LP\n" .
-  "   t - Next Track\n" .
-  "   x - Exit\n" .
-  "\n\n";
+    "yass [-c <category>] [-a <artist>] [-l <album>] [-m <mount>] [-p] [-q] [-r]\n" .
+    "\n" .
+    "<category>, <artist>, and <album> arguments can be perl regex or simple string\n" .
+    "\n" .
+    "In program control keys:\n\n" .
+    "   n - Next LP\n" .
+    "   t - Next Track\n" .
+    "   x - Exit\n" .
+    "\n\n";
 
 getopts("a:c:hl:m:pqr");
 
-if (defined($opt_h)) {
+if(defined($opt_h)) {
    print $usage;
    exit;
 }
-    
 
-if (defined($opt_m)) {
+
+if(defined($opt_m)) {
    $mount = $opt_m;
 } else {
    $mount = "/mnt/wd_my_cloud";
@@ -58,7 +58,7 @@ $first_lp = 0;
 #
 #   Music/<Category>/<Artist>/<Album>/<Track>.flac
 #
-while ($run) {
+while($run) {
 
    print("Building Album List");
 
@@ -76,7 +76,7 @@ while ($run) {
       #
       # List of categories to play now.
       #
-      if (!defined($opt_c) || ($category =~ m/$opt_c/)) {
+      if(!defined($opt_c) || ($category =~ m/$opt_c/)) {
 	 $play_categories{$category} = $category;
 	 push(@play_categories, $category);
       }
@@ -97,7 +97,7 @@ while ($run) {
 	 # If -a option only want to play artists matching name..
 	 # List of artists to play now.
 	 #
-	 if (defined($play_categories{$category}) &&
+	 if(defined($play_categories{$category}) &&
 	     (!defined($opt_a) || ($artist =~ m/$opt_a/))) {
 
 	    $play_artists{$artist} = $artist;
@@ -117,7 +117,7 @@ while ($run) {
 	    # For multi-disk albums, only remember disc 1.
 	    # Play multi-disk albums all together later...
 	    #
-	    if ($album =~ m/dis[ck]_?(\d+)/i) {
+	    if($album =~ m/dis[ck]_?(\d+)/i) {
 	       $disk_num = $1;
 	       next unless($disk_num =~ m/0*1/);
 	    }
@@ -146,8 +146,8 @@ while ($run) {
 	    #
 	    # -l option only play matching albums.
 	    #
-	    if (defined($play_categories{$category}) && defined($play_artists{$artist})) {
-	       if (!defined($opt_l) || ($album =~ m/$opt_l/)) {
+	    if(defined($play_categories{$category}) && defined($play_artists{$artist})) {
+	       if(!defined($opt_l) || ($album =~ m/$opt_l/)) {
 		  push(@play_albums, "${mount}/${category}/${artist}/${album}");
 	       }
 	    }
@@ -163,7 +163,7 @@ while ($run) {
    #
    # Randomize array
    #
-   if (defined($opt_r)) {
+   if(defined($opt_r)) {
       $ii = int(rand(100)) + 1;
       while($ii-- > 0) {
 	 @play_albums = &rand_array(@play_albums);
@@ -176,7 +176,7 @@ while ($run) {
    unless(defined($opt_q)) {
 
       open(CUEFILE, ">CUESHEET.txt") or
-	die "unable to open CUESHEET.txt\n";
+	  die "unable to open CUESHEET.txt\n";
 
       foreach $jj (0 .. $#play_albums) {
 	 printf("CUESHEET:%7d %s\n", $jj, $play_albums[$jj]);
@@ -211,7 +211,7 @@ sub play_albums() {
       # Does this album end with disk_<n>?
       # Cut off the disk number and play them all
       #
-      if ($play_album =~ m/(dis(c|k)_?(\d+))/i) {
+      if($play_album =~ m/(dis(c|k)_?(\d+))/i) {
 	 ($disc_name, $ck, $disc_num) = ($1, $2, $3);
 
 	 print("DISC_NAME=$disc_name DISC_NUM=$disc_num\n");
@@ -260,7 +260,7 @@ sub input_handler() {
    #
    # Child Process Only
    #
-   if ($pid == 0) {
+   if($pid == 0) {
       #
       #
       # x = exit
@@ -268,7 +268,7 @@ sub input_handler() {
       # t = next track on album (Need to fix for last track of album)
       #
       my $key_pressed = 'c';
-      while (1) {
+      while(1) {
 
 	 #
 	 # Child process - Wait for one key input.
@@ -277,14 +277,14 @@ sub input_handler() {
 	 $key_pressed = ReadKey(0);
 	 ReadMode 'normal';
 
-	 if ($key_pressed) {
+	 if($key_pressed) {
 
 	    print("KEY PRESSED:$key_pressed PARENT=$parent_id, PLAY_ID=$play_id\n");
 
 	    #
 	    # x for exit. Kill parent process.
 	    #
-	    if ($key_pressed eq 'x') {
+	    if($key_pressed eq 'x') {
 
 	       print("Killing:$parent_id\n");
 	       killfam 9, $parent_id;
@@ -295,7 +295,7 @@ sub input_handler() {
 	    # n for next album. Kill SoX process
 	    # Loop around and pick up next lp
 	    #
-	    elsif ($key_pressed eq 'n') {
+	    elsif($key_pressed eq 'n') {
 	       print("Next Album\n");
 	       killfam 9, $play_id;
 	       waitpid($play_id, 0);
@@ -304,7 +304,7 @@ sub input_handler() {
 	    #
 	    # Next track - send Ctrl-C to SoX to skip to next track.
 	    #
-	    elsif ($key_pressed eq 't') {
+	    elsif($key_pressed eq 't') {
 	       print("Next Track\n");
 
 	       #
@@ -349,7 +349,7 @@ sub print_run() {
    #
    # Child process only.
    #
-   if ($pid == 0) {
+   if($pid == 0) {
 
       system($cmd);
       exit;
@@ -373,12 +373,12 @@ sub rand_array {
    $seed = $#array + 1;
    my $randnum = int(rand($seed));
    $rand[$randnum] = shift(@array);
-   while (1) {
+   while(1) {
       my $randnum = int(rand($seed));
-      if ($rand[$randnum] eq undef) {
+      if($rand[$randnum] eq undef) {
 	 $rand[$randnum] = shift(@array);
       }
-      last if ($#array == -1);
+      last if($#array == -1);
    }
    return @rand;
 }
