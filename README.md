@@ -6,7 +6,7 @@ Command Syntax:
 
    yass [-c <category>] [-a <artist>] [-l <album>] [-m <mount>] [-p] [-q] [-r]
    
-   <category>, <artist>, and <album> arguments can be perl regex or simple string
+   <category>, -a, and -l arguments can be perl regex or simple string
 
    In program control keys:
    
