@@ -38,7 +38,7 @@ art and I don't need a way to fast forward or re-wind inside a
 track.
 
 The goal is to have a web front end that help manage things but for
-now, album_sreamer loops though all music in randomized (-r) or
+now, album_streamer loops though all music in randomized (-r) or
 alphabetical album order.
 
 Requires
