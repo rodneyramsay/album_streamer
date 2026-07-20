@@ -20,10 +20,10 @@ $usage =
     "   x - Exit\n" .
     "\n" .
     "Pirate Audio button mapping (default):\n\n" .
-    "   A - Lock/Unlock (hold 3s to toggle)\n" .
+    "   A - Volume Up\n" .
     "   B - Volume Down\n" .
-    "   X - Next Album\n" .
-    "   Y - Volume Up\n" .
+    "   X - Lock/Unlock (hold 3s to toggle)\n" .
+    "   Y - Next Track\n" .
     "   (override with PIDAP_BUTTON_MAP env var)\n" .
     "\n\n";
 
@@ -46,7 +46,7 @@ if(defined($opt_m)) {
 #
 $play_pid_file = "pidap.play_pid";
 $ENV{PIDAP_PID_FILE} = $play_pid_file;
-$ENV{PIDAP_BUTTON_MAP} = $ENV{PIDAP_BUTTON_MAP} || "A:lock,B:vol_down,X:next,Y:vol_up";
+$ENV{PIDAP_BUTTON_MAP} = $ENV{PIDAP_BUTTON_MAP} || "A:vol_up,B:vol_down,X:lock,Y:next_track";
 $ENV{PIDAP_VOLUME_CONTROL} = $ENV{PIDAP_VOLUME_CONTROL} || "Amp";
 $ENV{PIDAP_VOLUME_STEP} = $ENV{PIDAP_VOLUME_STEP} || "5";
 unlink($play_pid_file) if(-e $play_pid_file);
@@ -275,6 +275,11 @@ sub play_albums() {
 
       unless(defined($opt_p)) {
 	 #
+	 # Clear any stale restart request before starting playback.
+	 #
+	 unlink("pidap.restart") if(-e "pidap.restart");
+
+	 #
 	 # Fork off process to stream music.
 	 # Use <Album_Name>*/*.flac to catch all disc numbers.
 	 #
@@ -302,6 +307,15 @@ sub play_albums() {
 	 #
 	 killfam 9, $input_id;
 	 waitpid $input_id, 0;
+
+	 #
+	 # If the button handler requested a restart, replay this album.
+	 #
+	 if(-e "pidap.restart") {
+	    unlink("pidap.restart");
+	    print("Restarting current album\n");
+	    redo;
+	 }
       }
    }
    }

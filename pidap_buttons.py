@@ -31,7 +31,7 @@ except ImportError as e:
 BUTTONS = [5, 6, 16, 24]
 LABELS = ['A', 'B', 'X', 'Y']
 
-DEFAULT_MAP = 'A:lock,B:vol_down,X:next,Y:vol_up'
+DEFAULT_MAP = 'A:vol_up,B:vol_down,X:lock,Y:next_track'
 
 
 def parse_map(s):
@@ -65,6 +65,21 @@ except ValueError:
 
 locked = False
 lock_lock = threading.Lock()
+
+_last_press = {pin: 0 for pin in BUTTONS}
+DEBOUNCE = 0.15
+
+A_PIN = BUTTONS[LABELS.index('A')]
+B_PIN = BUTTONS[LABELS.index('B')]
+X_PIN = BUTTONS[LABELS.index('X')]
+Y_PIN = BUTTONS[LABELS.index('Y')]
+
+COMBO_TIMEOUT = 0.5
+COMBO_CLEAR = 0.5
+
+_combo_lock = threading.Lock()
+_combo_active = False
+_combo_clear_timer = None
 
 
 def get_play_pid():
@@ -145,6 +160,64 @@ def kill_play(sig=signal.SIGKILL):
     log(f'Killed play family starting at {pid}')
 
 
+def _set_combo_active(active=True):
+    global _combo_active, _combo_clear_timer
+    with _combo_lock:
+        _combo_active = active
+        if active:
+            if _combo_clear_timer:
+                _combo_clear_timer.cancel()
+            _combo_clear_timer = threading.Timer(COMBO_CLEAR, _set_combo_active, args=(False,))
+            _combo_clear_timer.start()
+        else:
+            _combo_clear_timer = None
+
+
+def next_album():
+    log('Next album')
+    kill_play(signal.SIGKILL)
+    _set_combo_active(True)
+
+
+def next_track():
+    log('Next track')
+    kill_play(signal.SIGINT)
+
+
+def restart_album():
+    pid = get_play_pid()
+    if pid <= 0:
+        log('No play process to restart')
+        return
+    flag_file = os.path.join(os.path.dirname(PID_FILE), 'pidap.restart')
+    try:
+        with open(flag_file, 'w') as f:
+            f.write('1\n')
+    except Exception as e:
+        log(f'Could not write restart flag: {e}')
+    log('Restart current album requested')
+    kill_play(signal.SIGKILL)
+    _set_combo_active(True)
+
+
+def vol_button_thread(pin, func):
+    start = time.time()
+    while is_pressed(pin):
+        if _combo_active or is_pressed(Y_PIN):
+            return
+        if time.time() - start > COMBO_TIMEOUT:
+            break
+        time.sleep(0.02)
+
+    if _combo_active:
+        return
+
+    if func == 'vol_up':
+        run_amixer('up')
+    elif func == 'vol_down':
+        run_amixer('down')
+
+
 def is_pressed(pin):
     return GPIO.input(pin) == GPIO.LOW
 
@@ -164,33 +237,44 @@ def lock_thread(pin):
 
 
 def handle_button(pin):
+    now = time.time()
+    if now - _last_press.get(pin, 0) < DEBOUNCE:
+        return
+    _last_press[pin] = now
+
     label = LABELS[BUTTONS.index(pin)]
     func = BUTTON_MAP.get(label)
     log(f'Button {label} pressed, func={func}')
     if func is None:
         return
 
+    with lock_lock:
+        if locked and func != 'lock':
+            log(f'Button {label} ({func}) ignored (locked)')
+            return
+
     if func == 'lock':
         t = threading.Thread(target=lock_thread, args=(pin,), daemon=True)
         t.start()
         return
 
-    with lock_lock:
-        is_locked = locked
-
-    if is_locked and func == 'next':
-        log(f'Button {label} ({func}) ignored (locked)')
+    if func == 'next_track':
+        if is_pressed(A_PIN):
+            log('Y + A -> next album')
+            next_album()
+            return
+        if is_pressed(B_PIN):
+            log('Y + B -> restart album')
+            restart_album()
+            return
+        next_track()
         return
 
-    if func == 'next':
-        log(f'Button {label}: next album')
-        kill_play(signal.SIGKILL)
-    elif func == 'vol_up':
-        run_amixer('up')
-    elif func == 'vol_down':
-        run_amixer('down')
-    else:
-        log(f'Unknown function {func} for button {label}')
+    if func in ('vol_up', 'vol_down'):
+        threading.Thread(target=vol_button_thread, args=(pin, func), daemon=True).start()
+        return
+
+    log(f'Unknown function {func} for button {label}')
 
 
 def watch_parent():
