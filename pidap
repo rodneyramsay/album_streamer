@@ -34,6 +34,7 @@ if(defined($opt_h)) {
    exit;
 }
 
+$opt_r = 1 unless(defined($opt_r));
 
 if(defined($opt_m)) {
    $mount = $opt_m;
@@ -49,6 +50,7 @@ $ENV{PIDAP_PID_FILE} = $play_pid_file;
 $ENV{PIDAP_BUTTON_MAP} = $ENV{PIDAP_BUTTON_MAP} || "A:vol_up,B:vol_down,X:lock,Y:next_track";
 $ENV{PIDAP_VOLUME_CONTROL} = $ENV{PIDAP_VOLUME_CONTROL} || "Amp";
 $ENV{PIDAP_VOLUME_STEP} = $ENV{PIDAP_VOLUME_STEP} || "5";
+$ENV{PIDAP_INITIAL_VOLUME} = $ENV{PIDAP_INITIAL_VOLUME} || "20";
 unlink($play_pid_file) if(-e $play_pid_file);
 $gpio_pid = &start_gpio_handler();
 
@@ -247,6 +249,27 @@ sub write_play_pid() {
 }
 
 
+sub set_initial_volume {
+
+   my $control = $ENV{PIDAP_VOLUME_CONTROL} || 'Amp';
+   my $initial = $ENV{PIDAP_INITIAL_VOLUME} || 20;
+   my $max = 20;
+   my $attempt = 0;
+
+   while($attempt < $max) {
+      my $rc = system("amixer sset $control ${initial}% >/dev/null 2>&1");
+      if($rc == 0) {
+	 print("Initial volume set to ${initial}%\n");
+	 return;
+      }
+      Time::HiRes::usleep(200_000);
+      $attempt++;
+   }
+
+   print("Warning: could not set initial volume to ${initial}%\n");
+}
+
+
 sub play_albums() {
 
    my (@albums) = (@_);
@@ -289,6 +312,11 @@ sub play_albums() {
 	 # Record play pid for the GPIO button handler
 	 #
 	 &write_play_pid($play_id);
+
+	 #
+	 # Set the initial playback volume.
+	 #
+	 &set_initial_volume;
 
 	 #
 	 # Fork process to wait for user input
