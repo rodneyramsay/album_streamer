@@ -22,8 +22,10 @@ $usage =
     "Pirate Audio button mapping (default):\n\n" .
     "   A - Volume Up\n" .
     "   B - Volume Down\n" .
-    "   X - Lock/Unlock (hold 3s to toggle)\n" .
+    "   X - Short press: Pause/Resume (resumes here on next boot if paused), hold 3s: Lock/Unlock\n" .
     "   Y - Next Track\n" .
+    "   A + Y - Next Album\n" .
+    "   B + Y - Restart Album\n" .
     "   (override with PIDAP_BUTTON_MAP env var)\n" .
     "\n\n";
 
@@ -46,10 +48,12 @@ if(defined($opt_m)) {
 # Pirate Audio button / volume handler settings
 #
 $play_pid_file = "pidap.play_pid";
+$resume_file = "pidap.resume";
+$current_album_file = "pidap.current_album";
 $ENV{PIDAP_PID_FILE} = $play_pid_file;
 $ENV{PIDAP_BUTTON_MAP} = $ENV{PIDAP_BUTTON_MAP} || "A:vol_up,B:vol_down,X:lock,Y:next_track";
 $ENV{PIDAP_VOLUME_CONTROL} = $ENV{PIDAP_VOLUME_CONTROL} || "Amp";
-$ENV{PIDAP_VOLUME_STEP} = $ENV{PIDAP_VOLUME_STEP} || "5";
+$ENV{PIDAP_VOLUME_STEP} = $ENV{PIDAP_VOLUME_STEP} || "2";
 $ENV{PIDAP_INITIAL_VOLUME} = $ENV{PIDAP_INITIAL_VOLUME} || "20";
 unlink($play_pid_file) if(-e $play_pid_file);
 $gpio_pid = &start_gpio_handler();
@@ -62,6 +66,9 @@ $gpio_pid = &start_gpio_handler();
 $run = 1;
 $pid = 0;
 $first_lp = 0;
+
+my $resume_album = '';
+my $resume_offset = 0;
 
 @artists = ();
 @categories = ();
@@ -128,7 +135,7 @@ while($run) {
 	 #
 	 # Check album directories
 	 #
-	 foreach $album (`ls $mount/$category/$artist`) {
+	 foreach $album (`ls $mount/$category/$artist | sort`) {
 	    print(".");
 
 	    chomp($album);
@@ -187,6 +194,27 @@ while($run) {
       $ii = int(rand(100)) + 1;
       while($ii-- > 0) {
 	 @play_albums = &rand_array(@play_albums);
+      }
+   }
+
+   #
+   # Restore resume position if paused before shutdown.
+   #
+   ($resume_album, $resume_offset) = &read_resume;
+   if ($resume_album) {
+      my $found = 0;
+      for my $i (0 .. $#play_albums) {
+         if ($play_albums[$i] eq $resume_album) {
+            $first_lp = $i;
+            $found = 1;
+            last;
+         }
+      }
+      unless ($found) {
+         print "Warning: resume album $resume_album not in playlist, ignoring\n";
+         $resume_album = '';
+         $resume_offset = 0;
+         unlink($resume_file) if -e $resume_file;
       }
    }
 
@@ -270,6 +298,65 @@ sub set_initial_volume {
 }
 
 
+sub read_resume {
+   my ($album, $offset) = ('', 0);
+   if (-r $resume_file) {
+      if (open(my $rf, '<', $resume_file)) {
+         while (<$rf>) {
+            chomp;
+            if (/^album=(.+)/) { $album = $1; }
+            elsif (/^offset=([0-9.]+)/) { $offset = $1; }
+         }
+         close($rf);
+      }
+   }
+   return ($album, $offset);
+}
+
+sub write_current_album {
+   my ($album, $start_offset) = @_;
+   return unless $album;
+   $start_offset ||= 0;
+   if (open(my $cf, '>', $current_album_file)) {
+      print $cf "album=$album\noffset=$start_offset\n";
+      close($cf);
+   } else {
+      print "Warning: could not write $current_album_file: $!\n";
+   }
+}
+
+sub soxi_duration {
+   my ($file) = @_;
+   my $out = `soxi -D "$file" 2>/dev/null`;
+   return 0 unless defined $out && $out =~ /^([0-9.]+)/;
+   return $1 + 0;
+}
+
+sub build_resume_cmd {
+   my ($album, $offset) = @_;
+   my @files = sort glob("${album}*/*.flac");
+   return undef unless @files;
+
+   my $cum = 0;
+   my $idx = 0;
+   my $track_offset = 0;
+   for my $i (0 .. $#files) {
+      my $d = soxi_duration($files[$i]);
+      $cum += $d;
+      if ($cum > $offset) {
+         $idx = $i;
+         $track_offset = $offset - ($cum - $d);
+         last;
+      }
+   }
+   my @remaining = @files[$idx .. $#files];
+   my $cmd = 'play ' . join(' ', map { "\"$_\"" } @remaining);
+   if ($track_offset > 0) {
+      $cmd .= ' trim ' . sprintf('%.2f', $track_offset);
+   }
+   return $cmd;
+}
+
 sub play_albums() {
 
    my (@albums) = (@_);
@@ -279,6 +366,7 @@ sub play_albums() {
    #
    # Loop through albums and play all tracks in album folder.
    #
+   my $volume_initialized = 0;
    while(1) {
    for ($ii = $first_lp; $ii <= $#albums; $ii++) {
       print("Album Name: $albums[$ii]\n");
@@ -306,7 +394,23 @@ sub play_albums() {
 	 # Fork off process to stream music.
 	 # Use <Album_Name>*/*.flac to catch all disc numbers.
 	 #
-	 $play_id = &print_run("play ${play_album}*/*.flac");
+	 if ($resume_album && $play_album eq $resume_album && $resume_offset > 0) {
+	    &write_current_album($play_album, $resume_offset);
+	    my $resume_cmd = &build_resume_cmd($play_album, $resume_offset);
+	    if ($resume_cmd) {
+	       print("Resuming $play_album at offset $resume_offset\n");
+	       $play_id = &print_run($resume_cmd);
+	       $first_lp = 0;
+	    } else {
+	       print("Warning: could not build resume command for $play_album\n");
+	    }
+	    $resume_album = '';
+	    $resume_offset = 0;
+	    unlink($resume_file) if -e $resume_file;
+	 } else {
+	    &write_current_album($play_album, 0);
+	    $play_id = &print_run("play ${play_album}*/*.flac");
+	 }
 
 	 #
 	 # Record play pid for the GPIO button handler
@@ -314,9 +418,12 @@ sub play_albums() {
 	 &write_play_pid($play_id);
 
 	 #
-	 # Set the initial playback volume.
+	 # Set the initial playback volume once on first start.
 	 #
-	 &set_initial_volume;
+	 if (!$volume_initialized) {
+	    &set_initial_volume;
+	    $volume_initialized = 1;
+	 }
 
 	 #
 	 # Fork process to wait for user input

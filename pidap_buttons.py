@@ -52,6 +52,9 @@ PID_FILE = os.environ.get('PIDAP_PID_FILE')
 if not PID_FILE:
     PID_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pidap.play_pid')
 
+RESUME_FILE = os.path.join(os.path.dirname(PID_FILE), 'pidap.resume')
+CURRENT_ALBUM_FILE = os.path.join(os.path.dirname(PID_FILE), 'pidap.current_album')
+
 VOLUME_CONTROL = os.environ.get('PIDAP_VOLUME_CONTROL', '').strip() or 'Amp'
 try:
     VOLUME_STEP = int(os.environ.get('PIDAP_VOLUME_STEP', '5'))
@@ -65,6 +68,16 @@ except ValueError:
 
 locked = False
 lock_lock = threading.Lock()
+
+paused = False
+state_lock = threading.RLock()
+
+album_path = ''
+album_start = 0.0
+total_pause_time = 0.0
+pause_start = 0.0
+resume_valid = False
+last_play_pid = 0
 
 _last_press = {pin: 0 for pin in BUTTONS}
 DEBOUNCE = 0.15
@@ -160,6 +173,91 @@ def kill_play(sig=signal.SIGKILL):
     log(f'Killed play family starting at {pid}')
 
 
+def read_current_album():
+    data = {}
+    try:
+        with open(CURRENT_ALBUM_FILE, 'r') as f:
+            for line in f:
+                if '=' in line:
+                    k, v = line.strip().split('=', 1)
+                    data[k] = v
+    except Exception:
+        pass
+    return data.get('album', ''), float(data.get('offset', '0'))
+
+
+def write_resume():
+    with state_lock:
+        if not album_path or not resume_valid or not paused:
+            return
+        offset = time.time() - album_start - total_pause_time
+        if offset < 0:
+            offset = 0
+        try:
+            with open(RESUME_FILE, 'w') as f:
+                f.write(f'album={album_path}\n')
+                f.write(f'offset={offset:.2f}\n')
+                f.write('paused=1\n')
+            log(f'Resume saved: {album_path} offset={offset:.2f}s')
+        except Exception as e:
+            log(f'Could not write resume file: {e}')
+
+
+def delete_resume():
+    try:
+        if os.path.exists(RESUME_FILE):
+            os.remove(RESUME_FILE)
+            log('Resume file deleted')
+    except Exception as e:
+        log(f'Could not delete resume file: {e}')
+
+
+def monitor_playback():
+    global album_path, album_start, total_pause_time, paused, pause_start, resume_valid, last_play_pid
+    while True:
+        time.sleep(0.5)
+        pid = get_play_pid()
+        with state_lock:
+            if pid != last_play_pid:
+                last_play_pid = pid
+                if pid > 0:
+                    path, start_offset = read_current_album()
+                    album_path = path
+                    album_start = time.time() - start_offset
+                    total_pause_time = 0.0
+                    paused = False
+                    pause_start = 0.0
+                    resume_valid = True
+                    delete_resume()
+                    log(f'New play process: album={album_path} start_offset={start_offset} pid={pid}')
+
+
+def is_paused():
+    with state_lock:
+        return paused
+
+
+def toggle_pause():
+    global paused, pause_start, total_pause_time
+    pid = get_play_pid()
+    if pid <= 0:
+        log('No play process, cannot toggle pause')
+        return
+    with state_lock:
+        if paused:
+            kill_family(pid, signal.SIGCONT)
+            paused = False
+            total_pause_time += time.time() - pause_start
+            delete_resume()
+            log('Resumed playback')
+        else:
+            kill_family(pid, signal.SIGSTOP)
+            paused = True
+            pause_start = time.time()
+            write_resume()
+            log('Paused playback')
+
+
 def _set_combo_active(active=True):
     global _combo_active, _combo_clear_timer
     with _combo_lock:
@@ -174,17 +272,30 @@ def _set_combo_active(active=True):
 
 
 def next_album():
+    global resume_valid
     log('Next album')
+    if is_paused():
+        toggle_pause()
+    with state_lock:
+        delete_resume()
+        resume_valid = False
     kill_play(signal.SIGKILL)
     _set_combo_active(True)
 
 
 def next_track():
+    global resume_valid
     log('Next track')
+    if is_paused():
+        toggle_pause()
+    with state_lock:
+        delete_resume()
+        resume_valid = False
     kill_play(signal.SIGINT)
 
 
 def restart_album():
+    global resume_valid
     pid = get_play_pid()
     if pid <= 0:
         log('No play process to restart')
@@ -196,6 +307,11 @@ def restart_album():
     except Exception as e:
         log(f'Could not write restart flag: {e}')
     log('Restart current album requested')
+    if is_paused():
+        toggle_pause()
+    with state_lock:
+        delete_resume()
+        resume_valid = False
     kill_play(signal.SIGKILL)
     _set_combo_active(True)
 
@@ -203,7 +319,7 @@ def restart_album():
 def vol_button_thread(pin, func):
     start = time.time()
     while is_pressed(pin):
-        if _combo_active or is_pressed(Y_PIN):
+        if _combo_active or is_pressed(Y_PIN) or is_pressed(X_PIN):
             return
         if time.time() - start > COMBO_TIMEOUT:
             break
@@ -232,8 +348,10 @@ def lock_thread(pin):
         with lock_lock:
             locked = not locked
         log(f'Lock toggled: {"locked" if locked else "unlocked"}')
+    elif locked:
+        log(f'X short press ignored (locked)')
     else:
-        log(f'Lock button short press ({duration:.2f}s) - no action')
+        toggle_pause()
 
 
 def handle_button(pin):
@@ -314,6 +432,9 @@ def main():
 
     watcher = threading.Thread(target=watch_parent, daemon=True)
     watcher.start()
+
+    playback_monitor = threading.Thread(target=monitor_playback, daemon=True)
+    playback_monitor.start()
 
     log(f'pidap button handler running, PID={os.getpid()}')
     log(f'Button map: {BUTTON_MAP}')

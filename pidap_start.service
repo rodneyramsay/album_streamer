@@ -1,0 +1,16 @@
+
+
+[Unit]
+Description=PIDAP - Pi Digital Audio Player
+After=sound.target
+
+[Service]
+Type=idle
+WorkingDirectory=/home/rodney/album_streamer
+ExecStart=sudo /usr/bin/perl /home/rodney/album_streamer/pidap
+Restart=always
+RestartSec=5
+User=rodney
+
+[Install]
+WantedBy=multi-user.target
