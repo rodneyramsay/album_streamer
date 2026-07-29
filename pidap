@@ -10,7 +10,7 @@ use FindBin;
 
 
 $usage =
-    "pidap [-c <category>] [-a <artist>] [-l <album>] [-m <mount>] [-p] [-q] [-r]\n" .
+    "pidap [-c <category>] [-a <artist>] [-l <album>] [-m <mount>] [-p] [-q]\n" .
     "\n" .
     "<category>, <artist>, and <album> arguments can be perl regex or simple string\n" .
     "\n" .
@@ -36,13 +36,14 @@ if(defined($opt_h)) {
    exit;
 }
 
-$opt_r = 1 unless(defined($opt_r));
-
 if(defined($opt_m)) {
    $mount = $opt_m;
 } else {
    $mount = "/usr/local/Music";
 }
+
+$playlist_file = "$mount/pidap.playlist";
+$place_file = "$mount/pidap.place";
 
 #
 # Pirate Audio button / volume handler settings
@@ -188,12 +189,48 @@ while($run) {
    print("\n\n======================== PIDAP! ================================\n\n");
 
    #
-   # Randomize array
+   # Use a saved playlist if it exists and no filters are in effect.
+   # Filters change the album set, so we always build fresh for those.
    #
-   if(defined($opt_r)) {
+   my $using_filters = (defined($opt_c) || defined($opt_a) || defined($opt_l));
+   my $loaded_playlist = 0;
+   my @disk_albums = @play_albums;
+
+   if (!$using_filters && -r $playlist_file) {
+      my @saved = &read_playlist_file($playlist_file);
+      if (@saved) {
+         my %disk = map { $_ => 1 } @disk_albums;
+         my @valid = grep { -d $_ && $disk{$_} } @saved;
+         if (@valid) {
+            @play_albums = @valid;
+            $loaded_playlist = 1;
+            print("Using saved playlist order\n");
+         } else {
+            print("Warning: saved playlist is out of date, rebuilding\n");
+            unlink($playlist_file) if -e $playlist_file;
+         }
+      }
+   }
+
+   #
+   # No saved playlist: build a fresh one, shuffle it, and save it.
+   #
+   unless ($loaded_playlist) {
       $ii = int(rand(100)) + 1;
       while($ii-- > 0) {
-	 @play_albums = &rand_array(@play_albums);
+         @play_albums = &rand_array(@play_albums);
+      }
+
+      if (!$using_filters) {
+         if (open(my $cf, '>', $playlist_file)) {
+            foreach $jj (0 .. $#play_albums) {
+               printf($cf "CUESHEET:%7d %s\n", $jj, $play_albums[$jj]);
+            }
+            close($cf);
+         } else {
+            print "Warning: could not write $playlist_file: $!\n";
+         }
+         unlink($place_file) if -e $place_file;
       }
    }
 
@@ -219,23 +256,42 @@ while($run) {
    }
 
    #
+   # Otherwise, restore our place in the playlist.
+   #
+   unless ($resume_album) {
+      my $place = &read_place_file($place_file);
+      if ($place > 0 && $place <= $#play_albums) {
+         $first_lp = $place;
+         print("Resuming playlist at index $first_lp: $play_albums[$first_lp]\n");
+      } elsif ($place > $#play_albums && $place > 0) {
+         print("Playlist was finished; starting over\n");
+         unlink($place_file) if -e $place_file;
+         $first_lp = 0;
+      }
+   }
+
+   #
    # Print out cuesheet unless quiet mode.
    #
    unless(defined($opt_q)) {
-
-      open(CUEFILE, ">CUESHEET.txt") or
-	  die "unable to open CUESHEET.txt\n";
-
       foreach $jj (0 .. $#play_albums) {
-	 printf("CUESHEET:%7d %s\n", $jj, $play_albums[$jj]);
-	 printf(CUEFILE "CUESHEET:%7d %s\n", $jj, $play_albums[$jj]);
+         printf("CUESHEET:%7d %s\n", $jj, $play_albums[$jj]);
       }
-      close(CUEFILE);
    }
 
    &play_albums(@play_albums);
 
+   #
+   # Loop back to the beginning when the playlist finishes.
+   # If we were interrupted, the place file still exists and we
+   # resume from there. Use -p to stop after one pass.
+   #
    last if(defined($opt_p));
+   if (-e $place_file) {
+      next;
+   }
+   $first_lp = 0;
+   next;
 }
 
 
@@ -357,17 +413,55 @@ sub build_resume_cmd {
    return $cmd;
 }
 
+sub read_playlist_file {
+   my ($file) = @_;
+   my @paths = ();
+   if (open(my $pf, '<', $file)) {
+      while (<$pf>) {
+         chomp;
+         next unless $_;
+         if (m/^\s*(?:CUESHEET:\s*)?\d+\s+(.+)$/) {
+            push @paths, $1;
+         } elsif (m/^(.+)$/) {
+            push @paths, $1;
+         }
+      }
+      close($pf);
+   }
+   return @paths;
+}
+
+sub read_place_file {
+   my ($file) = @_;
+   return 0 unless -r $file;
+   if (open(my $pf, '<', $file)) {
+      my $line = <$pf>;
+      close($pf);
+      return 0 unless defined $line;
+      chomp $line;
+      return $1 if $line =~ /^(\d+)$/;
+   }
+   return 0;
+}
+
+sub write_place_file {
+   my ($file, $index) = @_;
+   if (open(my $pf, '>', $file)) {
+      print $pf "$index\n";
+      close($pf);
+   } else {
+      print "Warning: could not write $file: $!\n";
+   }
+}
+
 sub play_albums() {
 
    my (@albums) = (@_);
-
-   my @albums_0 = @albums;
 
    #
    # Loop through albums and play all tracks in album folder.
    #
    my $volume_initialized = 0;
-   while(1) {
    for ($ii = $first_lp; $ii <= $#albums; $ii++) {
       print("Album Name: $albums[$ii]\n");
       $play_album = $albums[$ii];
@@ -385,6 +479,11 @@ sub play_albums() {
       }
 
       unless(defined($opt_p)) {
+	 #
+	 # Remember where we are in the playlist.
+	 #
+	 &write_place_file($place_file, $ii);
+
 	 #
 	 # Clear any stale restart request before starting playback.
 	 #
@@ -453,7 +552,11 @@ sub play_albums() {
 	 }
       }
    }
-   }
+
+   #
+   # Reached the end of the playlist; clear the saved place.
+   #
+   unlink($place_file) if -e $place_file;
 }
 
 #
