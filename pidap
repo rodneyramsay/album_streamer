@@ -2,10 +2,7 @@
 
 
 use POSIX ":sys_wait_h";
-use Proc::Killfam;
 use Getopt::Std;
-use Term::ReadKey;
-use Time::HiRes;
 use FindBin;
 
 
@@ -14,18 +11,14 @@ $usage =
     "\n" .
     "<category>, <artist>, and <album> arguments can be perl regex or simple string\n" .
     "\n" .
-    "In program control keys:\n\n" .
-    "   n - Next LP\n" .
-    "   t - Next Track\n" .
-    "   x - Exit\n" .
-    "\n" .
     "Pirate Audio button mapping (default):\n\n" .
     "   A - Volume Up\n" .
     "   B - Volume Down\n" .
     "   X - Short press: Pause/Resume (resumes here on next boot if paused), hold 3s: Lock/Unlock\n" .
     "   Y - Next Track\n" .
     "   A + Y - Next Album\n" .
-    "   B + Y - Restart Album\n" .
+    "   B + Y - Restart Album (first track within 15s: Previous Album)\n" .
+    "   A + B - Restart Track (within first 15s: Previous Track)\n" .
     "   (override with PIDAP_BUTTON_MAP env var)\n" .
     "\n\n";
 
@@ -57,7 +50,7 @@ $ENV{PIDAP_VOLUME_CONTROL} = $ENV{PIDAP_VOLUME_CONTROL} || "Amp";
 $ENV{PIDAP_VOLUME_STEP} = $ENV{PIDAP_VOLUME_STEP} || "2";
 $ENV{PIDAP_INITIAL_VOLUME} = $ENV{PIDAP_INITIAL_VOLUME} || "20";
 unlink($play_pid_file) if(-e $play_pid_file);
-$gpio_pid = &start_gpio_handler();
+&start_gpio_handler();
 
 
 ######################################################################
@@ -65,7 +58,6 @@ $gpio_pid = &start_gpio_handler();
 #
 #
 $run = 1;
-$pid = 0;
 $first_lp = 0;
 
 my $resume_album = '';
@@ -525,29 +517,45 @@ sub play_albums() {
 	 }
 
 	 #
-	 # Fork process to wait for user input
-	 #
-	 $input_id = &input_handler($$, $play_id, $gpio_pid);
-
-	 #
-	 # Wat for streaming to finish for this lp
+	 # Wait for streaming to finish for this lp
 	 #
 	 waitpid $play_id, 0;
 
 	 #
-	 # Kill input handler for this lp
-	 # Next lp will get a new input handler
-	 # (and a new PID to send signals)
+	 # If the button handler requested the previous album, back up.
 	 #
-	 killfam 9, $input_id;
-	 waitpid $input_id, 0;
+	 if(-e "pidap.previous") {
+	    unlink("pidap.previous");
+	    print("Previous album\n");
+	    if($ii > 0) {
+	       $ii -= 2;
+	    } else {
+	       $ii = $#albums - 1;
+	    }
+	    next;
+	 }
 
 	 #
 	 # If the button handler requested a restart, replay this album.
+	 # If the file contains an offset, resume from that position.
 	 #
 	 if(-e "pidap.restart") {
+	    my $restart_offset = 0;
+	    if(open(my $rf, '<', "pidap.restart")) {
+	       while(<$rf>) {
+		  chomp;
+		  $restart_offset = $1 if(/^offset=([0-9.]+)/);
+	       }
+	       close($rf);
+	    }
 	    unlink("pidap.restart");
-	    print("Restarting current album\n");
+	    if($restart_offset > 0) {
+	       $resume_album = $play_album;
+	       $resume_offset = $restart_offset;
+	    }
+	    print("Restarting current album");
+	    print(" at offset $resume_offset") if $resume_offset;
+	    print("\n");
 	    redo;
 	 }
       }
@@ -558,92 +566,6 @@ sub play_albums() {
    #
    unlink($place_file) if -e $place_file;
 }
-
-#
-# Fork process to wait for keyboard input.
-# Send signals to play process for next track, etc.
-#
-sub input_handler() {
-   ($parent_id, $play_id, $gpio_pid) = (@_);
-
-   my $pid = fork;
-   die "Failed for fork input handler\n" unless defined $pid;
-
-   #
-   # Child Process Only
-   #
-   if($pid == 0) {
-      #
-      #
-      # x = exit
-      # n = next album in queue (Need to fix for last album in queue)
-      # t = next track on album (Need to fix for last track of album)
-      #
-      my $key_pressed = 'c';
-      while(1) {
-
-	 #
-	 # Child process - Wait for one key input.
-	 #
-	 ReadMode 'cbreak';
-	 $key_pressed = ReadKey(0);
-	 ReadMode 'normal';
-
-	 if($key_pressed) {
-
-	    print("KEY PRESSED:$key_pressed PARENT=$parent_id, PLAY_ID=$play_id\n");
-
-	    #
-	    # x for exit. Kill parent and GPIO button handler processes.
-	    #
-	    if($key_pressed eq 'x') {
-
-	       print("Killing:$parent_id\n");
-	       killfam 9, $gpio_pid if($gpio_pid);
-	       killfam 9, $parent_id;
-	       waitpid($parent_id, 0);
-	       exit;
-	    }
-	    #
-	    # n for next album. Kill SoX process
-	    # Loop around and pick up next lp
-	    #
-	    elsif($key_pressed eq 'n') {
-	       print("Next Album\n");
-	       killfam 9, $play_id;
-	       waitpid($play_id, 0);
-	       exit;
-	    }
-	    #
-	    # Next track - send Ctrl-C to SoX to skip to next track.
-	    #
-	    elsif($key_pressed eq 't') {
-	       print("Next Track\n");
-
-	       #
-	       # Send Ctrl-C
-	       #
-	       killfam 2, $play_id;
-
-	       #
-	       # Wait a little bit to prevent user from sending 2
-	       # Ctrl-C in a row. 2x Ctrl-C kills sox, 1x Ctrl-C
-	       # skips to next track
-	       # 
-	       Time::HiRes::usleep(1200);
-	    }
-	 }
-      }
-      exit;
-   }
-   #
-   # Main process. Return spawned PID number.
-   #
-   else {
-      return $pid;
-   }
-}
-
 
 #
 # Print command and system run it.

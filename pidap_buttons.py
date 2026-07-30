@@ -2,6 +2,7 @@
 import os
 import sys
 import time
+import glob
 import signal
 import subprocess
 import threading
@@ -78,6 +79,10 @@ total_pause_time = 0.0
 pause_start = 0.0
 resume_valid = False
 last_play_pid = 0
+
+album_files = []
+album_durations = []
+album_total_duration = 0.0
 
 _last_press = {pin: 0 for pin in BUTTONS}
 DEBOUNCE = 0.15
@@ -186,6 +191,65 @@ def read_current_album():
     return data.get('album', ''), float(data.get('offset', '0'))
 
 
+def soxi_duration(path):
+    try:
+        res = subprocess.run(['soxi', '-D', path], capture_output=True, text=True, timeout=5)
+        if res.returncode == 0:
+            return float(res.stdout.strip())
+    except Exception as e:
+        log(f'soxi failed for {path}: {e}')
+    return 0.0
+
+
+def load_album_tracks(album):
+    global album_files, album_durations, album_total_duration
+    if not album:
+        return
+    pattern = f'{album}*/*.flac'
+    files = sorted(glob.glob(pattern))
+    if not files:
+        # Fallback: try direct FLAC files in the album directory
+        files = sorted(glob.glob(f'{album}/*.flac'))
+    durations = []
+    for f in files:
+        d = soxi_duration(f)
+        durations.append(d)
+    with state_lock:
+        album_files = files
+        album_durations = durations
+        album_total_duration = sum(durations)
+    log(f'Loaded album tracks: {len(files)} files, total {album_total_duration:.1f}s')
+
+
+def current_track_info():
+    with state_lock:
+        if not album_path or not album_durations or not album_start:
+            return None
+        if paused:
+            elapsed = pause_start - album_start - total_pause_time
+        else:
+            elapsed = time.time() - album_start - total_pause_time
+    if elapsed < 0:
+        elapsed = 0
+    if not album_durations:
+        return None
+    total = album_total_duration
+    if elapsed >= total:
+        i = len(album_durations) - 1
+        track_start = total - album_durations[i]
+        return i, 0.0, track_start
+    cum = 0.0
+    for i, d in enumerate(album_durations):
+        cum += d
+        if cum > elapsed:
+            track_time = elapsed - (cum - d)
+            track_start = cum - d
+            return i, track_time, track_start
+    i = len(album_durations) - 1
+    track_start = total - album_durations[i]
+    return i, 0.0, track_start
+
+
 def write_resume():
     with state_lock:
         if not album_path or not resume_valid or not paused:
@@ -230,6 +294,7 @@ def monitor_playback():
                     resume_valid = True
                     delete_resume()
                     log(f'New play process: album={album_path} start_offset={start_offset} pid={pid}')
+                    load_album_tracks(path)
 
 
 def is_paused():
@@ -283,18 +348,37 @@ def next_album():
     _set_combo_active(True)
 
 
-def next_track():
+def previous_album():
     global resume_valid
-    log('Next track')
+    log('Previous album')
     if is_paused():
         toggle_pause()
+    flag_file = os.path.join(os.path.dirname(PID_FILE), 'pidap.previous')
+    try:
+        with open(flag_file, 'w') as f:
+            f.write('1\n')
+    except Exception as e:
+        log(f'Could not write previous flag: {e}')
     with state_lock:
         delete_resume()
         resume_valid = False
-    kill_play(signal.SIGINT)
+    kill_play(signal.SIGKILL)
+    _set_combo_active(True)
 
 
-def restart_album():
+def _try_combo():
+    with _combo_lock:
+        if _combo_active:
+            return False
+        _combo_active = True
+        if _combo_clear_timer:
+            _combo_clear_timer.cancel()
+        _combo_clear_timer = threading.Timer(COMBO_CLEAR, _set_combo_active, args=(False,))
+        _combo_clear_timer.start()
+        return True
+
+
+def restart_album(offset=0):
     global resume_valid
     pid = get_play_pid()
     if pid <= 0:
@@ -303,10 +387,13 @@ def restart_album():
     flag_file = os.path.join(os.path.dirname(PID_FILE), 'pidap.restart')
     try:
         with open(flag_file, 'w') as f:
-            f.write('1\n')
+            if offset > 0:
+                f.write(f'offset={offset:.2f}\n')
+            else:
+                f.write('1\n')
     except Exception as e:
         log(f'Could not write restart flag: {e}')
-    log('Restart current album requested')
+    log(f'Restart album requested (offset={offset})')
     if is_paused():
         toggle_pause()
     with state_lock:
@@ -316,10 +403,80 @@ def restart_album():
     _set_combo_active(True)
 
 
+def track_start_or_previous():
+    global resume_valid
+    info = current_track_info()
+    if info is None:
+        log('No track info, restarting album')
+        restart_album(0)
+        return
+    idx, track_time, track_start = info
+    with state_lock:
+        durations = list(album_durations)
+    if track_time <= 15:
+        if idx == 0:
+            log('A+B: at first track start, going to previous album')
+            previous_album()
+            return
+        log('A+B: in first 15s, going to previous track')
+        new_offset = track_start - durations[idx - 1]
+        if new_offset < 0:
+            new_offset = 0
+        restart_album(new_offset)
+    else:
+        log('A+B: restarting current track')
+        restart_album(track_start)
+
+
+def album_restart_or_previous():
+    info = current_track_info()
+    if info and info[0] == 0 and info[1] <= 15:
+        log('B+Y: at first track start, going to previous album')
+        previous_album()
+    else:
+        log('B+Y: restarting album')
+        restart_album(0)
+
+
+def next_track_or_album():
+    global resume_valid
+    info = current_track_info()
+    with state_lock:
+        durations = list(album_durations)
+    if info is None:
+        log('No track info, killing play to skip')
+        kill_play(signal.SIGINT)
+        _set_combo_active(True)
+        return
+    idx, track_time, track_start = info
+    if idx == len(durations) - 1:
+        log('Y: at last track, going to next album')
+        next_album()
+    else:
+        log('Y: skipping to next track')
+        if is_paused():
+            toggle_pause()
+        with state_lock:
+            delete_resume()
+            resume_valid = False
+        kill_play(signal.SIGINT)
+        _set_combo_active(True)
+
+
 def vol_button_thread(pin, func):
+    other = B_PIN if pin == A_PIN else A_PIN
     start = time.time()
     while is_pressed(pin):
         if _combo_active or is_pressed(Y_PIN) or is_pressed(X_PIN):
+            return
+        if is_pressed(other):
+            with lock_lock:
+                if locked:
+                    log('A+B ignored (locked)')
+                    return
+            if _try_combo():
+                log('A+B -> track start or previous')
+                track_start_or_previous()
             return
         if time.time() - start > COMBO_TIMEOUT:
             break
@@ -367,7 +524,7 @@ def handle_button(pin):
         return
 
     with lock_lock:
-        if locked and func != 'lock':
+        if locked and func not in ('lock', 'vol_up', 'vol_down'):
             log(f'Button {label} ({func}) ignored (locked)')
             return
 
@@ -377,15 +534,17 @@ def handle_button(pin):
         return
 
     if func == 'next_track':
+        if _combo_active:
+            return
         if is_pressed(A_PIN):
             log('Y + A -> next album')
             next_album()
             return
         if is_pressed(B_PIN):
-            log('Y + B -> restart album')
-            restart_album()
+            log('Y + B -> album restart or previous')
+            album_restart_or_previous()
             return
-        next_track()
+        next_track_or_album()
         return
 
     if func in ('vol_up', 'vol_down'):
