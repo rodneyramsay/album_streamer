@@ -164,10 +164,7 @@ while($run) {
    # Randomize array
    #
    if(defined($opt_r)) {
-      $ii = int(rand(100)) + 1;
-      while($ii-- > 0) {
-	 @play_albums = &rand_array(@play_albums);
-      }
+      @play_albums = &rand_array(@play_albums);
    }
 
    #
@@ -371,16 +368,12 @@ sub print_run() {
 #
 sub rand_array {
    my @array = @_;
-   my @rand = undef;
-   $seed = $#array + 1;
-   my $randnum = int(rand($seed));
-   $rand[$randnum] = shift(@array);
-   while(1) {
-      my $randnum = int(rand($seed));
-      if($rand[$randnum] eq undef) {
-	 $rand[$randnum] = shift(@array);
-      }
-      last if($#array == -1);
+   my @rand;
+   while (@array) {
+      my $i = int(rand(@array));
+      my $random_item = $array[$i];
+      push @rand, $random_item;
+      splice(@array, $i, 1);
    }
    return @rand;
 }

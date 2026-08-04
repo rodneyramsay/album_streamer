@@ -4,6 +4,7 @@
 use POSIX ":sys_wait_h";
 use Getopt::Std;
 use FindBin;
+use Time::HiRes;
 
 
 $usage =
@@ -35,22 +36,38 @@ if(defined($opt_m)) {
    $mount = "/usr/local/Music";
 }
 
-$playlist_file = "$mount/pidap.playlist";
-$place_file = "$mount/pidap.place";
+$playlist_file = "$mount/pidap.generated.playlist";
+$place_file = "$mount/pidap.generated.place";
 
 #
 # Pirate Audio button / volume handler settings
 #
-$play_pid_file = "pidap.play_pid";
-$resume_file = "pidap.resume";
-$current_album_file = "pidap.current_album";
+$play_pid_file = "pidap.generated.play_pid";
+$resume_file = "pidap.generated.resume";
+$current_album_file = "pidap.generated.current_album";
 $ENV{PIDAP_PID_FILE} = $play_pid_file;
 $ENV{PIDAP_BUTTON_MAP} = $ENV{PIDAP_BUTTON_MAP} || "A:vol_up,B:vol_down,X:lock,Y:next_track";
 $ENV{PIDAP_VOLUME_CONTROL} = $ENV{PIDAP_VOLUME_CONTROL} || "Amp";
 $ENV{PIDAP_VOLUME_STEP} = $ENV{PIDAP_VOLUME_STEP} || "2";
 $ENV{PIDAP_INITIAL_VOLUME} = $ENV{PIDAP_INITIAL_VOLUME} || "20";
+
+#
+# LED control. Default to the Pi's on-board ACT/led0 LED.
+#
+$led_brightness = $ENV{PIDAP_LED_PATH} || "";
+$led_trigger    = $ENV{PIDAP_LED_TRIGGER} || "";
+if(!$led_brightness && -w "/sys/class/leds/led0/brightness") {
+   $led_brightness = "/sys/class/leds/led0/brightness";
+} elsif(!$led_brightness && -w "/sys/class/leds/ACT/brightness") {
+   $led_brightness = "/sys/class/leds/ACT/brightness";
+}
+if($led_brightness && !$led_trigger) {
+   ($led_trigger = $led_brightness) =~ s{/brightness$}{/trigger};
+}
+
 unlink($play_pid_file) if(-e $play_pid_file);
 &start_gpio_handler();
+&led_init();
 
 
 ######################################################################
@@ -208,10 +225,7 @@ while($run) {
    # No saved playlist: build a fresh one, shuffle it, and save it.
    #
    unless ($loaded_playlist) {
-      $ii = int(rand(100)) + 1;
-      while($ii-- > 0) {
-         @play_albums = &rand_array(@play_albums);
-      }
+      @play_albums = &rand_array(@play_albums);
 
       if (!$using_filters) {
          if (open(my $cf, '>', $playlist_file)) {
@@ -361,12 +375,32 @@ sub read_resume {
    return ($album, $offset);
 }
 
+sub get_album_offsets {
+   my ($album) = @_;
+   my @files = sort glob("${album}*/*.flac");
+   my @durations;
+   my @offsets;
+   my $cum = 0;
+   for my $f (@files) {
+      my $d = soxi_duration($f);
+      push @durations, $d;
+      push @offsets, $cum;
+      $cum += $d;
+   }
+   return (\@files, \@durations, \@offsets, $cum);
+}
+
 sub write_current_album {
-   my ($album, $start_offset) = @_;
+   my ($album, $start_offset, $files, $durations) = @_;
    return unless $album;
    $start_offset ||= 0;
    if (open(my $cf, '>', $current_album_file)) {
       print $cf "album=$album\noffset=$start_offset\n";
+      if ($files && $durations && @$files) {
+	 for my $i (0 .. $#$files) {
+	    print $cf "track:$i:$durations->[$i]=$files->[$i]\n";
+	 }
+      }
       close($cf);
    } else {
       print "Warning: could not write $current_album_file: $!\n";
@@ -381,15 +415,14 @@ sub soxi_duration {
 }
 
 sub build_resume_cmd {
-   my ($album, $offset) = @_;
-   my @files = sort glob("${album}*/*.flac");
-   return undef unless @files;
+   my ($album, $offset, $files, $durations) = @_;
+   return undef unless $files && @$files;
 
    my $cum = 0;
    my $idx = 0;
    my $track_offset = 0;
-   for my $i (0 .. $#files) {
-      my $d = soxi_duration($files[$i]);
+   for my $i (0 .. $#$files) {
+      my $d = $durations->[$i];
       $cum += $d;
       if ($cum > $offset) {
          $idx = $i;
@@ -397,7 +430,7 @@ sub build_resume_cmd {
          last;
       }
    }
-   my @remaining = @files[$idx .. $#files];
+   my @remaining = @$files[$idx .. $#$files];
    my $cmd = 'play ' . join(' ', map { "\"$_\"" } @remaining);
    if ($track_offset > 0) {
       $cmd .= ' trim ' . sprintf('%.2f', $track_offset);
@@ -479,15 +512,31 @@ sub play_albums() {
 	 #
 	 # Clear any stale restart request before starting playback.
 	 #
-	 unlink("pidap.restart") if(-e "pidap.restart");
+	 unlink("pidap.generated.restart") if(-e "pidap.generated.restart");
+
+	 #
+	 # Precompute the track boundaries for this album so the button
+	 # handler can map playback time to tracks without calling soxi.
+	 #
+	 my ($files, $durations, $offsets, $total) = &get_album_offsets($play_album);
+
+	 #
+	 # Flash the LED while loading/starting the next album, then
+	 # turn it off once the play process is running.
+	 #
+	 &led_flash();
+
+	 my $play_start_offset = 0;
+	 $play_id = 0;
 
 	 #
 	 # Fork off process to stream music.
 	 # Use <Album_Name>*/*.flac to catch all disc numbers.
 	 #
 	 if ($resume_album && $play_album eq $resume_album && $resume_offset > 0) {
-	    &write_current_album($play_album, $resume_offset);
-	    my $resume_cmd = &build_resume_cmd($play_album, $resume_offset);
+	    $play_start_offset = $resume_offset;
+	    &write_current_album($play_album, $resume_offset, $files, $durations);
+	    my $resume_cmd = &build_resume_cmd($play_album, $resume_offset, $files, $durations);
 	    if ($resume_cmd) {
 	       print("Resuming $play_album at offset $resume_offset\n");
 	       $play_id = &print_run($resume_cmd);
@@ -499,9 +548,11 @@ sub play_albums() {
 	    $resume_offset = 0;
 	    unlink($resume_file) if -e $resume_file;
 	 } else {
-	    &write_current_album($play_album, 0);
+	    &write_current_album($play_album, 0, $files, $durations);
 	    $play_id = &print_run("play ${play_album}*/*.flac");
 	 }
+
+	 &led_off();
 
 	 #
 	 # Record play pid for the GPIO button handler
@@ -517,15 +568,62 @@ sub play_albums() {
 	 }
 
 	 #
-	 # Wait for streaming to finish for this lp
+	 # Wait for streaming to finish for this lp, blinking the LED each
+	 # time the playback position crosses a track boundary.
 	 #
-	 waitpid $play_id, 0;
+	 if ($play_id > 0) {
+	    my $start_time = Time::HiRes::time();
+	    my $track_blink_until = 0;
+	    my $next_offset_idx = 0;
+	    for my $i (0 .. $#$offsets) {
+	       last if $offsets->[$i] > $play_start_offset + 0.05;
+	       $next_offset_idx = $i + 1;
+	    }
+	    if ($play_start_offset > 0.05) {
+	       for my $i (0 .. $#$offsets) {
+	          if (abs($offsets->[$i] - $play_start_offset) < 0.05) {
+	             &led_track_blink();
+	             $track_blink_until = $start_time + 0.15;
+	             last;
+	          }
+	       }
+	    }
+	    while ($play_id > 0) {
+	       my $res = waitpid($play_id, WNOHANG);
+	       if ($res == 0) {
+		  #
+		  # If the button handler asked for previous/restart and the play
+		  # family is still running, force a group kill so we can exit the
+		  # loop and act on the flag.  The child setpgrp above makes this
+		  # safe: the group id is the play child's pid, not pidap's group.
+		  #
+		  if (-e "pidap.generated.previous" || -e "pidap.generated.restart") {
+		     print("Forcing play family kill for button request\n");
+		     kill(9, -$play_id);
+		  }
+	       }
+	       last if $res > 0 || $res == -1;
+	       my $now = Time::HiRes::time();
+	       my $album_time = $play_start_offset + ($now - $start_time);
+	       if ($next_offset_idx < @$offsets && $album_time >= $offsets->[$next_offset_idx] - 0.05) {
+	          &led_track_blink();
+	          $track_blink_until = $now + 0.15;
+	          $next_offset_idx++;
+	       }
+	       if ($track_blink_until && $now >= $track_blink_until) {
+	          &led_off();
+	          $track_blink_until = 0;
+	       }
+	       Time::HiRes::usleep(50_000);
+	    }
+	    &led_off();
+	 }
 
 	 #
 	 # If the button handler requested the previous album, back up.
 	 #
-	 if(-e "pidap.previous") {
-	    unlink("pidap.previous");
+	 if(-e "pidap.generated.previous") {
+	    unlink("pidap.generated.previous");
 	    print("Previous album\n");
 	    if($ii > 0) {
 	       $ii -= 2;
@@ -539,16 +637,16 @@ sub play_albums() {
 	 # If the button handler requested a restart, replay this album.
 	 # If the file contains an offset, resume from that position.
 	 #
-	 if(-e "pidap.restart") {
+	 if(-e "pidap.generated.restart") {
 	    my $restart_offset = 0;
-	    if(open(my $rf, '<', "pidap.restart")) {
+	    if(open(my $rf, '<', "pidap.generated.restart")) {
 	       while(<$rf>) {
 		  chomp;
 		  $restart_offset = $1 if(/^offset=([0-9.]+)/);
 	       }
 	       close($rf);
 	    }
-	    unlink("pidap.restart");
+	    unlink("pidap.generated.restart");
 	    if($restart_offset > 0) {
 	       $resume_album = $play_album;
 	       $resume_offset = $restart_offset;
@@ -565,6 +663,8 @@ sub play_albums() {
    # Reached the end of the playlist; clear the saved place.
    #
    unlink($place_file) if -e $place_file;
+
+   &led_off();
 }
 
 #
@@ -586,6 +686,13 @@ sub print_run() {
    #
    if($pid == 0) {
 
+      #
+      # Put the play process and its descendants (sox, aplay, ...) into
+      # their own process group.  This lets us kill the whole family with
+      # one signal to the group id.
+      #
+      setpgrp $$, $$;
+
       system($cmd);
       exit;
    }
@@ -598,22 +705,66 @@ sub print_run() {
 
 
 #
+# LED control helpers.
+#
+sub led_write {
+   my ($file, $val) = @_;
+   return unless $file;
+   open(my $fh, '>', $file) or return;
+   print $fh $val;
+   close($fh);
+}
+
+sub led_init {
+   led_off();
+}
+
+sub led_flash {
+   return unless $led_brightness;
+   if($led_trigger) {
+      led_write($led_brightness, 1);
+      led_write($led_trigger, 'timer');
+      (my $base = $led_trigger) =~ s{/trigger$}{};
+      led_write("$base/delay_on", 900);
+      led_write("$base/delay_off", 900);
+   } else {
+      led_write($led_brightness, 1);
+   }
+}
+
+sub led_track_blink {
+   return unless $led_brightness;
+   if($led_trigger) {
+      led_write($led_brightness, 1);
+      led_write($led_trigger, 'timer');
+      (my $base = $led_trigger) =~ s{/trigger$}{};
+      led_write("$base/delay_on", 100);
+      led_write("$base/delay_off", 100);
+   } else {
+      led_write($led_brightness, 1);
+   }
+}
+
+sub led_off {
+   return unless $led_brightness;
+   led_write($led_trigger, 'none') if $led_trigger;
+   led_write($led_brightness, 0);
+}
+
+
+#
 # Randomize array order.
 # Thanks to Perl.LiveJournal.com
 # https://perl.livejournal.com/101830.html
 #
 sub rand_array {
    my @array = @_;
-   my @rand = undef;
-   $seed = $#array + 1;
-   my $randnum = int(rand($seed));
-   $rand[$randnum] = shift(@array);
-   while(1) {
-      my $randnum = int(rand($seed));
-      if($rand[$randnum] eq undef) {
-	 $rand[$randnum] = shift(@array);
-      }
-      last if($#array == -1);
+   my @rand;
+   while (@array) {
+      my $i = int(rand(@array));
+      my $random_item = $array[$i];
+      push @rand, $random_item;
+      splice(@array, $i, 1);
    }
    return @rand;
 }

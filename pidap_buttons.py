@@ -51,10 +51,10 @@ def parse_map(s):
 BUTTON_MAP = parse_map(os.environ.get('PIDAP_BUTTON_MAP', DEFAULT_MAP))
 PID_FILE = os.environ.get('PIDAP_PID_FILE')
 if not PID_FILE:
-    PID_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pidap.play_pid')
+    PID_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pidap.generated.play_pid')
 
-RESUME_FILE = os.path.join(os.path.dirname(PID_FILE), 'pidap.resume')
-CURRENT_ALBUM_FILE = os.path.join(os.path.dirname(PID_FILE), 'pidap.current_album')
+RESUME_FILE = os.path.join(os.path.dirname(PID_FILE), 'pidap.generated.resume')
+CURRENT_ALBUM_FILE = os.path.join(os.path.dirname(PID_FILE), 'pidap.generated.current_album')
 
 VOLUME_CONTROL = os.environ.get('PIDAP_VOLUME_CONTROL', '').strip() or 'Amp'
 try:
@@ -174,21 +174,43 @@ def kill_play(sig=signal.SIGKILL):
     if pid <= 0:
         log('No play process')
         return
-    kill_family(pid, sig)
+    try:
+        # The play child is in its own process group, so kill the whole group.
+        os.killpg(pid, sig)
+    except (AttributeError, OSError):
+        kill_family(pid, sig)
     log(f'Killed play family starting at {pid}')
 
 
 def read_current_album():
     data = {}
+    files = []
+    durations = []
     try:
         with open(CURRENT_ALBUM_FILE, 'r') as f:
             for line in f:
-                if '=' in line:
-                    k, v = line.strip().split('=', 1)
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith('track:'):
+                    # Format: track:<index>:<duration>=<path>
+                    try:
+                        _, idx, rest = line.split(':', 2)
+                        dur, path = rest.split('=', 1)
+                        idx = int(idx)
+                        while len(files) <= idx:
+                            files.append(None)
+                            durations.append(0.0)
+                        files[idx] = path
+                        durations[idx] = float(dur)
+                    except Exception as e:
+                        log(f'Bad track line: {line} ({e})')
+                elif '=' in line:
+                    k, v = line.split('=', 1)
                     data[k] = v
     except Exception:
         pass
-    return data.get('album', ''), float(data.get('offset', '0'))
+    return data.get('album', ''), float(data.get('offset', '0')), files, durations
 
 
 def soxi_duration(path):
@@ -277,7 +299,7 @@ def delete_resume():
 
 
 def monitor_playback():
-    global album_path, album_start, total_pause_time, paused, pause_start, resume_valid, last_play_pid
+    global album_path, album_start, total_pause_time, paused, pause_start, resume_valid, last_play_pid, album_files, album_durations, album_total_duration
     while True:
         time.sleep(0.5)
         pid = get_play_pid()
@@ -285,7 +307,7 @@ def monitor_playback():
             if pid != last_play_pid:
                 last_play_pid = pid
                 if pid > 0:
-                    path, start_offset = read_current_album()
+                    path, start_offset, files, durations = read_current_album()
                     album_path = path
                     album_start = time.time() - start_offset
                     total_pause_time = 0.0
@@ -293,8 +315,13 @@ def monitor_playback():
                     pause_start = 0.0
                     resume_valid = True
                     delete_resume()
-                    log(f'New play process: album={album_path} start_offset={start_offset} pid={pid}')
-                    load_album_tracks(path)
+                    if files and durations:
+                        album_files = files
+                        album_durations = durations
+                        album_total_duration = sum(durations)
+                    else:
+                        load_album_tracks(path)
+                    log(f'New play process: album={album_path} start_offset={start_offset} pid={pid} tracks={len(album_durations)}')
 
 
 def is_paused():
@@ -353,7 +380,7 @@ def previous_album():
     log('Previous album')
     if is_paused():
         toggle_pause()
-    flag_file = os.path.join(os.path.dirname(PID_FILE), 'pidap.previous')
+    flag_file = os.path.join(os.path.dirname(PID_FILE), 'pidap.generated.previous')
     try:
         with open(flag_file, 'w') as f:
             f.write('1\n')
@@ -384,7 +411,7 @@ def restart_album(offset=0):
     if pid <= 0:
         log('No play process to restart')
         return
-    flag_file = os.path.join(os.path.dirname(PID_FILE), 'pidap.restart')
+    flag_file = os.path.join(os.path.dirname(PID_FILE), 'pidap.generated.restart')
     try:
         with open(flag_file, 'w') as f:
             if offset > 0:
@@ -548,6 +575,17 @@ def handle_button(pin):
         return
 
     if func in ('vol_up', 'vol_down'):
+        other = B_PIN if pin == A_PIN else A_PIN
+        other_label = 'B' if label == 'A' else 'A'
+        if is_pressed(other):
+            with lock_lock:
+                if locked:
+                    log(f'A+B ignored (locked)')
+                    return
+            if _try_combo():
+                log(f'{label} + {other_label} -> track start or previous')
+                track_start_or_previous()
+            return
         threading.Thread(target=vol_button_thread, args=(pin, func), daemon=True).start()
         return
 

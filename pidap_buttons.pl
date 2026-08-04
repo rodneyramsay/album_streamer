@@ -11,7 +11,7 @@ use vars qw($VERSION);
 $VERSION = '1.0';
 
 my $LOG_FILE = $ENV{PIDAP_LOG_FILE} || '/tmp/pidap_buttons.log';
-my $PID_FILE = $ENV{PIDAP_PID_FILE} || ($FindBin::Bin . '/pidap.play_pid');
+my $PID_FILE = $ENV{PIDAP_PID_FILE} || ($FindBin::Bin . '/pidap.generated.play_pid');
 my $VOLUME_CONTROL = $ENV{PIDAP_VOLUME_CONTROL} || 'Amp';
 my $VOLUME_STEP = $ENV{PIDAP_VOLUME_STEP} || 2;
 my $LOCK_HOLD_SEC = $ENV{PIDAP_LOCK_HOLD_SEC} || 3.0;
@@ -219,7 +219,7 @@ sub restart_album {
     my $flag_file = $PID_FILE;
     $flag_file =~ s/[^\/]+$//;
     $flag_file .= '/' if $flag_file && $flag_file !~ m|/$|;
-    $flag_file .= 'pidap.restart';
+    $flag_file .= 'pidap.generated.restart';
     log_msg("Writing restart flag: $flag_file");
     if (open(my $rf, '>', $flag_file)) {
         print $rf "1\n";
