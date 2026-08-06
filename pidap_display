@@ -1,4 +1,3 @@
 #!/bin/sh
-# Run pidap_display.py from the same directory as this wrapper.
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-exec python3 "$SCRIPT_DIR/pidap_display.py" "$@"
+# Run pidap_display.py from the venv.
+exec /home/rodney/venv/bin/python3 /home/rodney/album_streamer/pidap_display.py "$@"

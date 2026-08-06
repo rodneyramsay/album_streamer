@@ -49,7 +49,7 @@ $ENV{PIDAP_PID_FILE} = $play_pid_file;
 $ENV{PIDAP_BUTTON_MAP} = $ENV{PIDAP_BUTTON_MAP} || "A:vol_up,B:vol_down,X:lock,Y:next_track";
 $ENV{PIDAP_VOLUME_CONTROL} = $ENV{PIDAP_VOLUME_CONTROL} || "Amp";
 $ENV{PIDAP_VOLUME_STEP} = $ENV{PIDAP_VOLUME_STEP} || "2";
-$ENV{PIDAP_INITIAL_VOLUME} = $ENV{PIDAP_INITIAL_VOLUME} || "20";
+$ENV{PIDAP_INITIAL_VOLUME} = $ENV{PIDAP_INITIAL_VOLUME} || "40";
 
 #
 # LED control. Default to the Pi's on-board ACT/led0 LED.
@@ -342,7 +342,7 @@ sub write_play_pid() {
 sub set_initial_volume {
 
    my $control = $ENV{PIDAP_VOLUME_CONTROL} || 'Amp';
-   my $initial = $ENV{PIDAP_INITIAL_VOLUME} || 20;
+   my $initial = $ENV{PIDAP_INITIAL_VOLUME} || 40;
    my $max = 20;
    my $attempt = 0;
 
@@ -579,6 +579,11 @@ sub play_albums() {
 	       last if $offsets->[$i] > $play_start_offset + 0.05;
 	       $next_offset_idx = $i + 1;
 	    }
+
+	    # Show the track that is playing now on the TFT.
+	    my $current_track_idx = ($next_offset_idx > 0) ? ($next_offset_idx - 1) : 0;
+	    &update_display($play_album, $files->[$current_track_idx]);
+
 	    if ($play_start_offset > 0.05) {
 	       for my $i (0 .. $#$offsets) {
 	          if (abs($offsets->[$i] - $play_start_offset) < 0.05) {
@@ -605,11 +610,12 @@ sub play_albums() {
 	       last if $res > 0 || $res == -1;
 	       my $now = Time::HiRes::time();
 	       my $album_time = $play_start_offset + ($now - $start_time);
-	       if ($next_offset_idx < @$offsets && $album_time >= $offsets->[$next_offset_idx] - 0.05) {
-	          &led_track_blink();
-	          $track_blink_until = $now + 0.15;
-	          $next_offset_idx++;
-	       }
+	      if ($next_offset_idx < @$offsets && $album_time >= $offsets->[$next_offset_idx] - 0.05) {
+	         &led_track_blink();
+	         &update_display($play_album, $files->[$next_offset_idx]);
+	         $track_blink_until = $now + 0.15;
+	         $next_offset_idx++;
+	      }
 	       if ($track_blink_until && $now >= $track_blink_until) {
 	          &led_off();
 	          $track_blink_until = 0;
@@ -665,6 +671,36 @@ sub play_albums() {
    unlink($place_file) if -e $place_file;
 
    &led_off();
+}
+
+#
+# Update the TFT display with the current artist/album/track.
+#
+sub update_display {
+    my ($album_path, $track_file) = @_;
+    return unless $album_path && $track_file;
+
+    my @parts = split(m{/}, $album_path);
+    return if @parts < 2;
+    my $album_name  = $parts[-1];
+    my $artist_name = $parts[-2];
+
+    my $track_name = $track_file;
+    $track_name =~ s{^.*/}{};
+    $track_name =~ s{\.(?:flac|mp3|ogg|m4a|wav)$}{}i;
+
+    my $display = "$FindBin::Bin/pidap_display";
+    return unless -x $display;
+
+    my $pid = fork;
+    return unless defined $pid;
+
+    if ($pid == 0) {
+        open(STDOUT, '>/dev/null') or die;
+        open(STDERR, '>/dev/null') or die;
+        exec($display, '-a', $artist_name, '-l', $album_name, '-t', $track_name);
+        exit;
+    }
 }
 
 #
