@@ -582,7 +582,7 @@ sub play_albums() {
 
 	    # Show the track that is playing now on the TFT.
     my $current_track_idx = ($next_offset_idx > 0) ? ($next_offset_idx - 1) : 0;
-    &update_display($play_album, $files->[$current_track_idx]);
+    &update_display($ii, $play_album, $files->[$current_track_idx]);
 
 	    if ($play_start_offset > 0.05) {
 	       for my $i (0 .. $#$offsets) {
@@ -637,7 +637,7 @@ sub play_albums() {
 	       my $album_time = $play_start_offset + ($now - $start_time - $effective_pause);
 	      if ($next_offset_idx < @$offsets && $album_time >= $offsets->[$next_offset_idx] - 0.05 && !$paused) {
          &led_track_blink();
-         &update_display($play_album, $files->[$next_offset_idx]);
+         &update_display($ii, $play_album, $files->[$next_offset_idx]);
          $track_blink_until = $now + 0.15;
          $next_offset_idx++;
       }
@@ -702,12 +702,12 @@ sub play_albums() {
 # Update the TFT display with the current artist/album/track.
 #
 sub update_display {
-    my ($album_path, $track_file) = @_;
-    return unless $album_path && $track_file;
+    my ($album_number, $album_path, $track_file) = @_;
+    return unless defined $album_number && $album_path && $track_file;
 
     my @parts = split(m{/}, $album_path);
     return if @parts < 2;
-    my $album_name  = $parts[-1];
+    my $album_name  = "$album_number : " . $parts[-1];
     my $artist_name = $parts[-2];
 
     my $track_name = $track_file;
