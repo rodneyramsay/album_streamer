@@ -47,5 +47,6 @@ Requires
    Time::HiRes
 
 Use 'export AUDIODEV=hw:<n>' to select sound card <n> for sox playback.
+Use 'export AUDIODEV=pulse' to select bluetooth speaker on pulse based system
 
 
