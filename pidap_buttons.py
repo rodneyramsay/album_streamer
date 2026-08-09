@@ -60,7 +60,7 @@ VOLUME_CONTROL = os.environ.get('PIDAP_VOLUME_CONTROL', '').strip() or 'Amp'
 try:
     VOLUME_STEP = int(os.environ.get('PIDAP_VOLUME_STEP', '5'))
 except ValueError:
-    VOLUME_STEP = 5
+    VOLUME_STEP = 1
 
 try:
     LOCK_HOLD_SEC = float(os.environ.get('PIDAP_LOCK_HOLD_SEC', '3.0'))
@@ -92,11 +92,20 @@ B_PIN = BUTTONS[LABELS.index('B')]
 X_PIN = BUTTONS[LABELS.index('X')]
 Y_PIN = BUTTONS[LABELS.index('Y')]
 
+BACKLIGHT_PIN = 13
+BACKLIGHT_TIMEOUT = 10.0
+
 COMBO_TIMEOUT = 0.5
 COMBO_CLEAR = 0.5
 
 _combo_lock = threading.Lock()
 _combo_active = False
+
+backlight_on = True
+backlight_last = time.time()
+backlight_lock = threading.RLock()
+_backlight_setup = False
+_bl_power_paths = None
 _combo_clear_timer = None
 
 
@@ -538,6 +547,59 @@ def lock_thread(pin):
         toggle_pause()
 
 
+def _get_bl_power_paths():
+    global _bl_power_paths
+    if _bl_power_paths is None:
+        _bl_power_paths = sorted(glob.glob('/sys/class/backlight/*/bl_power'))
+    return _bl_power_paths
+
+
+def set_backlight(on):
+    global backlight_on
+    with backlight_lock:
+        backlight_on = on
+        paths = _get_bl_power_paths()
+        if paths:
+            # 0 = unblank (on), 4 = powerdown (off)
+            val = '0' if on else '4'
+            for p in paths:
+                try:
+                    with open(p, 'w') as f:
+                        f.write(val + '\n')
+                except Exception as e:
+                    log(f'Backlight {p} {val} failed: {e}')
+            return
+        # Fall back to RPi.GPIO if there is no kernel backlight interface.
+        try:
+            if not _backlight_setup:
+                GPIO.setwarnings(False)
+                GPIO.setup(BACKLIGHT_PIN, GPIO.OUT)
+                _backlight_setup = True
+            GPIO.output(BACKLIGHT_PIN, GPIO.HIGH if on else GPIO.LOW)
+        except Exception as e:
+            log(f'Backlight {"on" if on else "off"} failed: {e}')
+
+
+def wake_or_bump(label):
+    global backlight_last
+    with backlight_lock:
+        backlight_last = time.time()
+        if not backlight_on:
+            set_backlight(True)
+            log(f'Button {label} woke backlight')
+
+
+def backlight_watcher():
+    while True:
+        time.sleep(1.0)
+        with backlight_lock:
+            if not backlight_on:
+                continue
+            if time.time() - backlight_last >= BACKLIGHT_TIMEOUT:
+                set_backlight(False)
+                log('Backlight off due to inactivity')
+
+
 def handle_button(pin):
     now = time.time()
     if now - _last_press.get(pin, 0) < DEBOUNCE:
@@ -545,6 +607,8 @@ def handle_button(pin):
     _last_press[pin] = now
 
     label = LABELS[BUTTONS.index(pin)]
+    wake_or_bump(label)
+
     func = BUTTON_MAP.get(label)
     log(f'Button {label} pressed, func={func}')
     if func is None:
@@ -632,6 +696,9 @@ def main():
 
     playback_monitor = threading.Thread(target=monitor_playback, daemon=True)
     playback_monitor.start()
+
+    bl_watcher = threading.Thread(target=backlight_watcher, daemon=True)
+    bl_watcher.start()
 
     log(f'pidap button handler running, PID={os.getpid()}')
     log(f'Button map: {BUTTON_MAP}')
