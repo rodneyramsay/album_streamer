@@ -58,7 +58,7 @@ CURRENT_ALBUM_FILE = os.path.join(os.path.dirname(PID_FILE), 'pidap.generated.cu
 
 VOLUME_CONTROL = os.environ.get('PIDAP_VOLUME_CONTROL', '').strip() or 'Amp'
 try:
-    VOLUME_STEP = int(os.environ.get('PIDAP_VOLUME_STEP', '5'))
+    VOLUME_STEP = int(os.environ.get('PIDAP_VOLUME_STEP', '1'))
 except ValueError:
     VOLUME_STEP = 1
 
@@ -93,7 +93,7 @@ X_PIN = BUTTONS[LABELS.index('X')]
 Y_PIN = BUTTONS[LABELS.index('Y')]
 
 BACKLIGHT_PIN = 13
-BACKLIGHT_TIMEOUT = 10.0
+BACKLIGHT_TIMEOUT = 40.0
 
 COMBO_TIMEOUT = 0.5
 COMBO_CLEAR = 0.5
@@ -246,6 +246,11 @@ def load_album_tracks(album):
         d = soxi_duration(f)
         durations.append(d)
     with state_lock:
+        # If the user skipped/changed album while we were scanning,
+        # don't overwrite the current track list with stale data.
+        if album_path != album:
+            log(f'Album changed during load, discarding old track list for {album}')
+            return
         album_files = files
         album_durations = durations
         album_total_duration = sum(durations)
@@ -313,24 +318,30 @@ def monitor_playback():
         time.sleep(0.5)
         pid = get_play_pid()
         with state_lock:
-            if pid != last_play_pid:
-                last_play_pid = pid
-                if pid > 0:
-                    path, start_offset, files, durations = read_current_album()
-                    album_path = path
-                    album_start = time.time() - start_offset
-                    total_pause_time = 0.0
-                    paused = False
-                    pause_start = 0.0
-                    resume_valid = True
-                    delete_resume()
-                    if files and durations:
-                        album_files = files
-                        album_durations = durations
-                        album_total_duration = sum(durations)
-                    else:
-                        load_album_tracks(path)
-                    log(f'New play process: album={album_path} start_offset={start_offset} pid={pid} tracks={len(album_durations)}')
+            if pid == last_play_pid:
+                continue
+            last_play_pid = pid
+        if pid <= 0:
+            continue
+        path, start_offset, files, durations = read_current_album()
+        with state_lock:
+            album_path = path
+            album_start = time.time() - start_offset
+            total_pause_time = 0.0
+            paused = False
+            pause_start = 0.0
+            resume_valid = True
+            delete_resume()
+            if files and durations:
+                album_files = files
+                album_durations = durations
+                album_total_duration = sum(durations)
+        # Load track durations outside the state lock so button
+        # handling stays responsive while soxi runs on each file.
+        if not (files and durations):
+            load_album_tracks(path)
+        with state_lock:
+            log(f'New play process: album={album_path} start_offset={start_offset} pid={pid} tracks={len(album_durations)}')
 
 
 def is_paused():
@@ -436,7 +447,6 @@ def restart_album(offset=0):
         delete_resume()
         resume_valid = False
     kill_play(signal.SIGKILL)
-    _set_combo_active(True)
 
 
 def track_start_or_previous():
@@ -475,28 +485,21 @@ def album_restart_or_previous():
 
 
 def next_track_or_album():
-    global resume_valid
     info = current_track_info()
     with state_lock:
         durations = list(album_durations)
     if info is None:
-        log('No track info, killing play to skip')
-        kill_play(signal.SIGINT)
-        _set_combo_active(True)
+        log('No track info, restarting album')
+        restart_album(0)
         return
     idx, track_time, track_start = info
     if idx == len(durations) - 1:
         log('Y: at last track, going to next album')
         next_album()
     else:
-        log('Y: skipping to next track')
-        if is_paused():
-            toggle_pause()
-        with state_lock:
-            delete_resume()
-            resume_valid = False
-        kill_play(signal.SIGINT)
-        _set_combo_active(True)
+        next_start = track_start + durations[idx]
+        log(f'Y: skipping to next track at offset {next_start:.2f}s')
+        restart_album(next_start)
 
 
 def vol_button_thread(pin, func):
