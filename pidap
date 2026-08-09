@@ -637,12 +637,7 @@ sub play_albums() {
 	       }
 	       my $effective_pause = $total_pause_time + ($paused ? ($now - $pause_start) : 0);
 	       my $album_time = $play_start_offset + ($now - $start_time - $effective_pause);
-	      if ($next_offset_idx < @$offsets && $album_time >= $offsets->[$next_offset_idx] - 0.05 && !$paused) {
-         &led_track_blink();
-         # &update_display($ii, $play_album, $files->[$next_offset_idx]);
-         $track_blink_until = $now + 0.15;
-         $next_offset_idx++;
-      }
+	      # Track-boundary LED blink removed; only blink on file load.
 	       if ($track_blink_until && $now >= $track_blink_until) {
 	          &led_off();
 	          $track_blink_until = 0;
@@ -768,11 +763,11 @@ sub print_run() {
       #
       if ($cmd =~ /^play\b/) {
           my $filter = "$FindBin::Bin/filter_output";
-          my $filter_pid = open(my $filter_fh, '|-', 'perl', $filter)
+          my $filter_pid = open(my $filter_fh, '|-', '/usr/bin/perl', $filter)
               or die "Can't start filter_output: $!\n";
           select((select($filter_fh), $| = 1)[0]);
 
-          open(my $play_fh, '-|', 'sh', '-c', "$cmd 2>&1")
+          open(my $play_fh, '-|', '/bin/sh', '-c', "$cmd 2>&1")
               or die "Can't start play: $!\n";
 
           while (<$play_fh>) {
@@ -780,7 +775,6 @@ sub print_run() {
           }
           close($play_fh);
           close($filter_fh);
-          waitpid($filter_pid, 0) if $filter_pid > 0;
           exit;
       }
 
@@ -812,30 +806,12 @@ sub led_init {
 
 sub led_flash {
    return unless $led_brightness;
-   if($led_trigger) {
-      led_write($led_brightness, 1);
-      led_write($led_trigger, 'timer');
-      my $base = $led_trigger;
-      $base =~ s{/trigger$}{};
-      led_write("$base/delay_on", 900);
-      led_write("$base/delay_off", 900);
-   } else {
-      led_write($led_brightness, 1);
-   }
+   led_write($led_brightness, 1);
 }
 
 sub led_track_blink {
    return unless $led_brightness;
-   if($led_trigger) {
-      led_write($led_brightness, 1);
-      led_write($led_trigger, 'timer');
-      my $base = $led_trigger;
-      $base =~ s{/trigger$}{};
-      led_write("$base/delay_on", 100);
-      led_write("$base/delay_off", 100);
-   } else {
-      led_write($led_brightness, 1);
-   }
+   led_write($led_brightness, 1);
 }
 
 sub led_off {
