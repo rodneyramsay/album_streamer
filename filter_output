@@ -1,12 +1,19 @@
 #!/usr/bin/perl
 
 while(<>) {
+    #
+    # Only work on lines with the file name
+    #
     if(m/\//) {
 
+	#
+	# Pull out Artist, Album, Track Name
+	#
  	if(m/\/([^\/]+)\/([^\/]+)\/([^\/]+)\:\s*$/) {
+	    print "\n";
 	    print "$1\n";
 	    print "$2\n";
-	    print "$3\n\n";
+	    print "$3\n";
 	}
     }
 }
