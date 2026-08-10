@@ -58,7 +58,7 @@ CURRENT_ALBUM_FILE = os.path.join(os.path.dirname(PID_FILE), 'pidap.generated.cu
 
 VOLUME_CONTROL = os.environ.get('PIDAP_VOLUME_CONTROL', '').strip() or 'Amp'
 try:
-    VOLUME_STEP = int(os.environ.get('PIDAP_VOLUME_STEP', '1'))
+    VOLUME_STEP = int(os.environ.get('PIDAP_VOLUME_STEP', '5'))
 except ValueError:
     VOLUME_STEP = 1
 
@@ -93,7 +93,7 @@ X_PIN = BUTTONS[LABELS.index('X')]
 Y_PIN = BUTTONS[LABELS.index('Y')]
 
 BACKLIGHT_PIN = 13
-BACKLIGHT_TIMEOUT = 40.0
+BACKLIGHT_TIMEOUT = 10.0
 
 COMBO_TIMEOUT = 0.5
 COMBO_CLEAR = 0.5
@@ -246,11 +246,6 @@ def load_album_tracks(album):
         d = soxi_duration(f)
         durations.append(d)
     with state_lock:
-        # If the user skipped/changed album while we were scanning,
-        # don't overwrite the current track list with stale data.
-        if album_path != album:
-            log(f'Album changed during load, discarding old track list for {album}')
-            return
         album_files = files
         album_durations = durations
         album_total_duration = sum(durations)
@@ -318,30 +313,24 @@ def monitor_playback():
         time.sleep(0.5)
         pid = get_play_pid()
         with state_lock:
-            if pid == last_play_pid:
-                continue
-            last_play_pid = pid
-        if pid <= 0:
-            continue
-        path, start_offset, files, durations = read_current_album()
-        with state_lock:
-            album_path = path
-            album_start = time.time() - start_offset
-            total_pause_time = 0.0
-            paused = False
-            pause_start = 0.0
-            resume_valid = True
-            delete_resume()
-            if files and durations:
-                album_files = files
-                album_durations = durations
-                album_total_duration = sum(durations)
-        # Load track durations outside the state lock so button
-        # handling stays responsive while soxi runs on each file.
-        if not (files and durations):
-            load_album_tracks(path)
-        with state_lock:
-            log(f'New play process: album={album_path} start_offset={start_offset} pid={pid} tracks={len(album_durations)}')
+            if pid != last_play_pid:
+                last_play_pid = pid
+                if pid > 0:
+                    path, start_offset, files, durations = read_current_album()
+                    album_path = path
+                    album_start = time.time() - start_offset
+                    total_pause_time = 0.0
+                    paused = False
+                    pause_start = 0.0
+                    resume_valid = True
+                    delete_resume()
+                    if files and durations:
+                        album_files = files
+                        album_durations = durations
+                        album_total_duration = sum(durations)
+                    else:
+                        load_album_tracks(path)
+                    log(f'New play process: album={album_path} start_offset={start_offset} pid={pid} tracks={len(album_durations)}')
 
 
 def is_paused():
@@ -608,7 +597,13 @@ def handle_button(pin):
     if now - _last_press.get(pin, 0) < DEBOUNCE:
         return
     _last_press[pin] = now
+    try:
+        _handle_button(pin)
+    except Exception as e:
+        log(f'Button {pin} handler error: {e}')
 
+
+def _handle_button(pin):
     label = LABELS[BUTTONS.index(pin)]
     wake_or_bump(label)
 
