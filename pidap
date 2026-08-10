@@ -642,7 +642,7 @@ sub play_albums() {
 	          &led_off();
 	          $track_blink_until = 0;
 	       }
-	       Time::HiRes::usleep(50_000);
+	       Time::HiRes::usleep(100_000);
 	    }
 	    &led_off();
 	 }
