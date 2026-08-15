@@ -9,10 +9,12 @@ use IPC::Open3;
 use IO::Select;
 use IO::Handle;
 use Cwd qw(abs_path);
+use File::Basename qw(dirname);
 
-my $ROOT = $FindBin::Bin;
+my $ROOT = abs_path(dirname($FindBin::Bin));
 my $PIDAP       = "$ROOT/pidap";
 my $PIDAP_BUTTONS = "$ROOT/pidap_buttons.pl";
+chdir($ROOT) or die "chdir $ROOT: $!";
 
 my $TMP   = tempdir('pidap_test_XXXX', CLEANUP => 1, TMPDIR => 1);
 my $MUSIC = "$TMP/music";

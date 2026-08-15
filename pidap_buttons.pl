@@ -5,7 +5,8 @@ use warnings;
 use POSIX qw(:sys_wait_h);
 use Time::HiRes qw(usleep gettimeofday);
 use IO::Select;
-use IO::Socket::IP;
+use IO::Handle;
+use IPC::Open3;
 use FindBin;
 
 use vars qw($VERSION);
@@ -15,7 +16,7 @@ my $LOG_FILE = $ENV{PIDAP_LOG_FILE} || '/tmp/pidap_buttons.log';
 my $PID_FILE = $ENV{PIDAP_PID_FILE} || ($FindBin::Bin . '/pidap.generated.play_pid');
 my $VOLUME_CONTROL = $ENV{PIDAP_VOLUME_CONTROL} || 'Amp';
 my $VOLUME_STEP = $ENV{PIDAP_VOLUME_STEP} || 2;
-my $LOCK_HOLD_SEC = $ENV{PIDAP_LOCK_HOLD_SEC} || 3.0;
+my $LOCK_HOLD_SEC = $ENV{PIDAP_LOCK_HOLD_SEC} || 5.0;
 my $GPIO_CHIP = $ENV{PIDAP_GPIO_CHIP} || '';
 
 my @BUTTONS = (5, 6, 16, 24);
@@ -36,32 +37,24 @@ my $x_armed = 0;
 my $x_toggled = 0;
 my %pressed = ();
 my %press_time = ();
-my %last_event = ();
+my %last_fall = ();
+my %last_rise = ();
 my $combo_active_until = 0;
 my $y_pending = 0;
 my $pidap_pid = 0;
 my $last_play_pid = 0;
 my $album_start = 0;
 
-my $PIGPIO_HOST = $ENV{PIDAP_PIGPIO_HOST} || '::1';
-my $PIGPIO_PORT = $ENV{PIDAP_PIGPIO_PORT} || 8888;
-my $PIGPIO_CMD;
-my $PIGPIO_NOTIF;
-my $PIGPIO_NOTIFY_HANDLE = -1;
-my $PIGPIO_NOTIFY_MASK = 0;
-my $PIGPIO_LAST_LEVEL = 0;
-my $PIGPIO_BUFFER = '';
+my $GPIOMON_FH;
+my $GPIOMON_PID = 0;
+my $GPIOMON_BUFFER = '';
 
-use constant {
-    PI_INPUT      => 0,
-    PI_OUTPUT     => 1,
-    PI_PUD_UP     => 2,
-    PI_PUD_OFF    => 0,
-    PI_CMD_MODES  => 0,
-    PI_CMD_PUD    => 2,
-    PI_CMD_NOIB   => 99,
-    PI_CMD_NB     => 19,
-};
+my $BACKLIGHT_PIN = 13;
+my $BACKLIGHT_TIMEOUT = 60.0;
+my $backlight_on = 1;
+my $backlight_last = Time::HiRes::time();
+my $backlight_check_next = 0;
+my $BL_POWER_PATHS;
 
 # Always use our own /proc-based kill function so we are sure to hit
 # descendants of the play pid (Proc::Killfam without Proc::ProcessTable
@@ -95,98 +88,60 @@ sub parse_map {
     return \%map;
 }
 
-sub pigpio_send {
-    my ($sock, $cmd, $p1, $p2) = @_;
-    $p1 ||= 0;
-    $p2 ||= 0;
-    my $req = pack('V V V V', $cmd, $p1, $p2, 0);
-    my $sent = send($sock, $req, 0);
-    return -1 unless defined $sent && $sent == length($req);
-    my $resp = '';
-    while (length($resp) < 16) {
-        my $n = recv($sock, my $buf, 16 - length($resp), 0);
-        last unless defined $n && length($buf);
-        $resp .= $buf;
+sub start_gpiomon {
+    if ($ENV{PIDAP_FAKE_GPIO}) {
+        log_msg('Using fake GPIO on STDIN');
+        $GPIOMON_FH = IO::Handle->new_from_fd(fileno(STDIN), 'r');
+        return $GPIOMON_FH;
     }
-    return -1 if length($resp) < 16;
-    my @r = unpack('V V V l<', $resp);
-    return $r[3];
+    my @cmd = (
+        'gpiomon',
+        '-c', 'gpiochip0',
+        '--format=%o %E',
+        '--bias=pull-up',
+        '--edges=both',
+        @BUTTONS,
+    );
+    log_msg('Starting gpiomon: ' . join(' ', @cmd));
+    my $pid = open3(my $in, $GPIOMON_FH, '>&STDERR', @cmd);
+    die "gpiomon failed: $!" unless defined $pid && $pid > 0;
+    close($in) if $in;
+    $GPIOMON_PID = $pid;
+    return $GPIOMON_FH;
 }
 
-sub start_pigpio {
-    log_msg("Connecting to pigpiod at $PIGPIO_HOST:$PIGPIO_PORT");
-    $PIGPIO_CMD = IO::Socket::IP->new(
-        PeerAddr => $PIGPIO_HOST,
-        PeerPort => $PIGPIO_PORT,
-        Proto    => 'tcp',
-        Timeout  => 5,
-    ) or die "Cannot connect to pigpiod command socket: $!";
-    $PIGPIO_NOTIF = IO::Socket::IP->new(
-        PeerAddr => $PIGPIO_HOST,
-        PeerPort => $PIGPIO_PORT,
-        Proto    => 'tcp',
-        Timeout  => 5,
-    ) or die "Cannot connect to pigpiod notify socket: $!";
-
-    for my $pin (@BUTTONS) {
-        my $rc1 = pigpio_send($PIGPIO_CMD, PI_CMD_MODES, $pin, PI_INPUT);
-        log_msg("pigpiod set_mode pin $pin INPUT res=$rc1");
-        my $rc2 = pigpio_send($PIGPIO_CMD, PI_CMD_PUD, $pin, PI_PUD_UP);
-        log_msg("pigpiod set_pull_up_down pin $pin UP res=$rc2");
-        $PIGPIO_NOTIFY_MASK |= (1 << $pin);
-    }
-
-    my $handle = pigpio_send($PIGPIO_NOTIF, PI_CMD_NOIB, 0, 0);
-    log_msg("pigpiod NOIB res=$handle");
-    if ($handle < 0) {
-        die "pigpiod NOIB failed: $handle";
-    }
-    $PIGPIO_NOTIFY_HANDLE = $handle;
-    log_msg("pigpiod notification handle: $handle");
-
-    my $rc = pigpio_send($PIGPIO_CMD, PI_CMD_NB, $handle, $PIGPIO_NOTIFY_MASK);
-    log_msg("pigpiod notify_begin res=$rc");
-    if ($rc < 0) {
-        die "pigpiod notify_begin failed: $rc";
-    }
-    log_msg("pigpiod notify mask: $PIGPIO_NOTIFY_MASK");
-
-    return $PIGPIO_NOTIF;
-}
-
-sub check_pigpio_events {
+sub check_gpiomon_events {
     my ($sel, $timeout) = @_;
-    return unless $PIGPIO_NOTIF;
+    return unless $GPIOMON_FH;
     my @ready = $sel->can_read($timeout);
     return unless @ready;
     for my $fh (@ready) {
-        next unless $fh == $PIGPIO_NOTIF;
+        next unless $fh == $GPIOMON_FH;
         my $buf;
-        my $n = sysread($PIGPIO_NOTIF, $buf, 256);
+        my $n = sysread($GPIOMON_FH, $buf, 256);
         return unless defined $n && $n > 0;
-        $PIGPIO_BUFFER .= $buf;
-        while (length($PIGPIO_BUFFER) >= 12) {
-            my $rpt = substr($PIGPIO_BUFFER, 0, 12, '');
-            my ($seqno, $flags, $tick, $level) = unpack('v v V V', $rpt);
-            next if $flags != 0;  # ignore watchdog / alive
-            my $changed = ($level ^ $PIGPIO_LAST_LEVEL) & $PIGPIO_NOTIFY_MASK;
-            $PIGPIO_LAST_LEVEL = $level;
-            for my $pin (@BUTTONS) {
-                my $mask = 1 << $pin;
-                next unless $changed & $mask;
-                my $label = $PIN_TO_LABEL{$pin};
-                next unless defined $label;
-                my $now = Time::HiRes::time();
-                if ($now - ($last_event{$pin} || 0) < 0.05) {
-                    next;
-                }
-                $last_event{$pin} = $now;
-                my $val = ($level & $mask) ? 1 : 0;
-                if ($val == 0) {
-                    handle_press($pin, $label);
-                } else {
-                    handle_release($pin, $label);
-                }
+        $GPIOMON_BUFFER .= $buf;
+        while ($GPIOMON_BUFFER =~ s/^([^\r\n]+)[\r\n]+//) {
+            my $line = $1;
+            next if $line =~ /^\s*$/;
+            my ($pin, $edge) = split(/\s+/, $line, 2);
+            next unless defined $pin && defined $edge;
+            next unless exists $PIN_TO_LABEL{$pin};
+            my $now = Time::HiRes::time();
+            if ($edge eq 'falling' && $now - ($last_fall{$pin} || 0) < 0.10) {
+                next;
+            }
+            if ($edge eq 'rising' && $now - ($last_rise{$pin} || 0) < 0.10) {
+                next;
+            }
+            if ($edge eq 'falling') { $last_fall{$pin} = $now; }
+            else                    { $last_rise{$pin} = $now; }
+            my $label = $PIN_TO_LABEL{$pin};
+            wake_or_bump($label);
+            if ($edge eq 'falling') {
+                handle_press($pin, $label);
+            } elsif ($edge eq 'rising') {
+                handle_release($pin, $label);
             }
         }
     }
@@ -361,7 +316,7 @@ sub run_amixer {
 sub next_album {
     log_msg('Next album');
     kill_play(9);
-    $combo_active_until = time + 0.3;
+    $combo_active_until = Time::HiRes::time() + 0.3;
 }
 
 sub next_track {
@@ -387,7 +342,7 @@ sub previous_album {
         log_msg("Could not write previous flag: $!");
     }
     kill_play(9);
-    $combo_active_until = time + 0.3;
+    $combo_active_until = Time::HiRes::time() + 0.3;
 }
 
 sub read_current_album {
@@ -452,6 +407,22 @@ sub previous_or_restart {
     }
 }
 
+sub previous_track {
+    my $flag_file = $PID_FILE;
+    $flag_file =~ s{[^/]+$}{};
+    $flag_file .= '/' if $flag_file && $flag_file !~ m{/$};
+    $flag_file .= 'pidap.generated.previous_track';
+    log_msg("Previous track flag: $flag_file");
+    if (open(my $rf, '>', $flag_file)) {
+        print $rf "1\n";
+        close($rf);
+    } else {
+        log_msg("Could not write previous track flag: $!");
+    }
+    kill_play(9);
+    $combo_active_until = Time::HiRes::time() + 0.3;
+}
+
 sub restart_album {
     my ($offset) = @_;
     $offset ||= 0;
@@ -476,7 +447,7 @@ sub restart_album {
         log_msg("Could not write restart flag: $!");
     }
     kill_play(9);
-    $combo_active_until = time + 0.3;
+    $combo_active_until = Time::HiRes::time() + 0.3;
 }
 
 sub toggle_lock {
@@ -484,9 +455,69 @@ sub toggle_lock {
     log_msg($locked ? 'Locked' : 'Unlocked');
 }
 
+sub get_bl_power_paths {
+    return $BL_POWER_PATHS if defined $BL_POWER_PATHS;
+    $BL_POWER_PATHS = [ sort glob('/sys/class/backlight/*/bl_power') ];
+    return $BL_POWER_PATHS;
+}
+
+sub set_backlight {
+    my ($on) = @_;
+    $backlight_on = $on ? 1 : 0;
+    my $val = $on ? '0' : '4';
+    my $paths = get_bl_power_paths();
+    if (@$paths) {
+        for my $p (@$paths) {
+            if (open(my $fh, '>', $p)) {
+                print $fh "$val\n";
+                close($fh);
+            } else {
+                log_msg("Backlight $p $val failed: $!");
+            }
+        }
+        log_msg('Backlight ' . ($on ? 'on' : 'off') . ' via bl_power');
+        return;
+    }
+    my $drive = $on ? 'dh' : 'dl';
+    if (system("pinctrl set $BACKLIGHT_PIN op $drive >/dev/null 2>&1") == 0) {
+        log_msg("Backlight $on via pinctrl pin $BACKLIGHT_PIN");
+        return;
+    }
+    if (system("raspi-gpio set $BACKLIGHT_PIN op $drive >/dev/null 2>&1") == 0) {
+        log_msg("Backlight $on via raspi-gpio pin $BACKLIGHT_PIN");
+        return;
+    }
+    log_msg("Backlight $on failed: no bl_power and no pinctrl/raspi-gpio");
+}
+
+sub wake_or_bump {
+    my ($label) = @_;
+    $backlight_last = Time::HiRes::time();
+    if (!$backlight_on) {
+        set_backlight(1);
+        log_msg("Button $label woke backlight");
+    }
+}
+
+sub check_backlight_timeout {
+    return if Time::HiRes::time() < $backlight_check_next;
+    $backlight_check_next = Time::HiRes::time() + 1.0;
+    return unless $backlight_on;
+    if (Time::HiRes::time() - $backlight_last >= $BACKLIGHT_TIMEOUT) {
+        set_backlight(0);
+        log_msg('Backlight off due to inactivity');
+    }
+}
+
 sub is_pressed {
     my ($label) = @_;
     return $pressed{$label} ? 1 : 0;
+}
+
+sub recently_pressed {
+    my ($label) = @_;
+    return 0 unless $pressed{$label};
+    return (Time::HiRes::time() - $press_time{$label} < 0.25) ? 1 : 0;
 }
 
 sub handle_press {
@@ -498,37 +529,71 @@ sub handle_press {
     log_msg("Button $label pressed, func=$func");
 
     if ($func eq 'lock') {
+        if (!$locked && recently_pressed('A')) {
+            $x_toggled = 1;
+            $x_armed = 0;
+            $y_pending = 0;
+            next_track();
+            $combo_active_until = Time::HiRes::time() + 0.3;
+            return;
+        }
+        if (!$locked && recently_pressed('B')) {
+            $x_toggled = 1;
+            $x_armed = 0;
+            $y_pending = 0;
+            previous_track();
+            $combo_active_until = Time::HiRes::time() + 0.3;
+            return;
+        }
+        $y_pending = 0;
         $x_armed = 1;
         $x_toggled = 0;
         return;
     }
 
-    if ($locked) {
+    if ($locked && $func !~ /^(vol_up|vol_down)$/) {
         log_msg("Button $label ignored (locked)");
         return;
     }
 
     if ($func eq 'next_track' || $func eq 'next') {
-        if (is_pressed('A')) {
+        if (recently_pressed('A')) {
+            $y_pending = 0;
             next_album();
-        } elsif (is_pressed('B')) {
+        } elsif (recently_pressed('B')) {
+            $y_pending = 0;
             previous_or_restart();
         } elsif ($func eq 'next_track') {
             $y_pending = 1;
         } else {
+            $y_pending = 0;
             next_album();
         }
+        $combo_active_until = Time::HiRes::time() + 0.3;
         return;
     }
 
     if ($func eq 'vol_up' || $func eq 'vol_down') {
-        if ($y_pending) {
+        if (!$locked && recently_pressed('X')) {
+            $x_toggled = 1;
+            $x_armed = 0;
+            $y_pending = 0;
+            if ($func eq 'vol_up') {
+                next_track();
+            } else {
+                previous_track();
+            }
+            $combo_active_until = Time::HiRes::time() + 0.3;
+            return;
+        }
+        if (!$locked && $y_pending && Time::HiRes::time() - $press_time{'Y'} < 0.25) {
+            $y_pending = 0;
             if ($func eq 'vol_up') {
                 next_album();
             } else {
                 previous_or_restart();
             }
-            $y_pending = 0;
+            $combo_active_until = Time::HiRes::time() + 0.3;
             return;
         }
         # Volume is applied on release unless a combo fired.
@@ -553,8 +618,19 @@ sub handle_release {
         return;
     }
 
-    if (time < $combo_active_until) {
+    if ($func eq 'next_track' && $y_pending) {
+        $y_pending = 0;
+        next_track();
+        return;
+    }
+
+    if (Time::HiRes::time() < $combo_active_until) {
         log_msg("Button $label release ignored (combo active)");
+        return;
+    }
+
+    if (is_pressed('X')) {
+        log_msg("Button $label release ignored (X held)");
         return;
     }
 
@@ -563,13 +639,11 @@ sub handle_release {
         return;
     }
 
-    if ($locked) {
+    if ($locked && $func !~ /^(vol_up|vol_down)$/) {
         return;
     }
 
-    if ($func eq 'next_track' && $y_pending) {
-        next_track();
-        $y_pending = 0;
+    if ($func eq 'next_track') {
         return;
     }
 
@@ -612,14 +686,13 @@ sub check_play_pid {
 }
 
 sub cleanup {
-    if ($PIGPIO_CMD) {
-        close($PIGPIO_CMD) if $PIGPIO_CMD;
+    if ($GPIOMON_FH && !$ENV{PIDAP_FAKE_GPIO}) {
+        close($GPIOMON_FH) if $GPIOMON_FH;
+        $GPIOMON_FH = undef;
     }
-    if ($PIGPIO_NOTIF) {
-        close($PIGPIO_NOTIF) if $PIGPIO_NOTIF;
+    if ($GPIOMON_PID) {
+        kill('TERM', $GPIOMON_PID);
     }
-    $PIGPIO_CMD = undef;
-    $PIGPIO_NOTIF = undef;
 }
 
 sub handle_signal {
@@ -636,15 +709,17 @@ $SIG{HUP} = 'IGNORE';
 log_msg("pidap_buttons.pl starting, PID=$$");
 log_msg("Button map: " . join(',', map { "$_." . ($BUTTON_MAP->{$_} || '') } @LABELS));
 
-my $pigsock = start_pigpio();
-my $sel = IO::Select->new($pigsock);
+my $gpiomon_fh = start_gpiomon();
+my $sel = IO::Select->new($gpiomon_fh);
 
 init_pidap_pid();
+set_backlight(1);
 
 while (1) {
     check_parent();
     check_lock_timeout();
-    check_pigpio_events($sel, 0.05);
+    check_gpiomon_events($sel, 0.05);
+    check_backlight_timeout();
 }
 
 exit(0);

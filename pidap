@@ -46,8 +46,8 @@ if(defined($opt_m)) {
    $mount = "/usr/local/Music";
 }
 
-$playlist_file = "$mount/pidap.generated.playlist";
-$place_file = "$mount/pidap.generated.place";
+$playlist_file = "$FindBin::Bin/pidap.generated.playlist";
+$place_file = "$FindBin::Bin/pidap.generated.place";
 
 #
 # Pirate Audio button / volume handler settings
@@ -115,6 +115,7 @@ while($run) {
    #
    foreach $category (`ls $mount/`) {
       chomp($category);
+      next unless -d "$mount/$category";
 
       #
       # List of all categories for manipulating play list later.
@@ -135,6 +136,7 @@ while($run) {
       #
       foreach $artist (`ls $mount/$category/`) {
 	 chomp($artist);
+	 next unless -d "$mount/$category/$artist";
 
 	 #
 	 # List of all artists
@@ -176,6 +178,7 @@ while($run) {
 	    push(@album_names, $album);
 
 	    $album_path = "${mount}/${category}/${artist}/${album}";
+    next unless -d $album_path;
 
 	    #
 	    # Build lists of albums.
@@ -196,7 +199,10 @@ while($run) {
 	    #
 	    if(defined($play_categories{$category}) && defined($play_artists{$artist})) {
 	       if(!defined($opt_l) || ($album =~ m/$opt_l/)) {
-		  push(@play_albums, "${mount}/${category}/${artist}/${album}");
+		  my $play_path = "${mount}/${category}/${artist}/${album}";
+	  my @tracks = glob("${play_path}*/*.flac");
+	  next unless @tracks;
+	  push(@play_albums, $play_path);
 	       }
 	    }
 	 }
@@ -585,29 +591,15 @@ sub play_one_album {
     if ($g_skip_track) {
      $g_skip_track = 0;
      if ($next_offset_idx <= $#$offsets) {
-      my $next_offset = $offsets->[$next_offset_idx];
-      my $sox_pid = &find_play_child($play_id);
-      kill(2, $sox_pid) if $sox_pid > 0;
-      $play_start_offset = $next_offset;
-      $start_time = Time::HiRes::time();
-      for my $i (0 .. $#$offsets) {
-       last if $offsets->[$i] > $play_start_offset + 0.05;
-       $next_offset_idx = $i + 1;
-      }
-      if ($play_start_offset > 0.05) {
-       for my $i (0 .. $#$offsets) {
-        if (abs($offsets->[$i] - $play_start_offset) < 0.05) {
-         &led_track_blink();
-         $track_blink_until = $start_time + 0.15;
-         last;
-        }
-       }
-      }
+      $resume_album = $play_album;
+      $resume_offset = $offsets->[$next_offset_idx];
+      $do_restart = 1;
+      &led_track_blink();
+      $track_blink_until = Time::HiRes::time() + 0.15;
      }
-    }
-    if ($g_prev_or_restart) {
+     kill(9, -$play_id) if $play_id > 0;
+    } elsif ($g_prev_or_restart) {
      $g_prev_or_restart = 0;
-     print("DEBUG: SIGUSR2 received\n");
      my $now = $g_prev_or_restart_time;
      my $effective_pause = $total_pause_time + ($paused ? ($now - $pause_start) : 0);
      my $album_time = $play_start_offset + ($now - $start_time - $effective_pause);
@@ -618,17 +610,35 @@ sub play_one_album {
      }
      my $track_start = $offsets->[$track_idx];
      my $track_time = $album_time - $track_start;
-     if ($track_idx == 0 && $track_time <= 15) {
+     if ($track_idx == 0 && $track_time <= 5) {
       $do_previous = 1;
      } else {
       $do_restart = 1;
       $resume_album = $play_album;
       $resume_offset = 0;
      }
-     print("DEBUG: track_idx=$track_idx track_time=$track_time do_previous=$do_previous do_restart=$do_restart\n");
+     print("DEBUG: B+Y track_idx=$track_idx track_time=$track_time do_previous=$do_previous do_restart=$do_restart\n");
+     kill(9, -$play_id) if $play_id > 0;
+    } elsif (-e q#pidap.generated.previous_track#) {
+     unlink(q#pidap.generated.previous_track#);
+     my $now = Time::HiRes::time();
+     my $effective_pause = $total_pause_time + ($paused ? ($now - $pause_start) : 0);
+     my $album_time = $play_start_offset + ($now - $start_time - $effective_pause);
+     my $track_idx = 0;
+     for my $i (0 .. $#$offsets) {
+      last if $offsets->[$i] > $album_time;
+      $track_idx = $i;
+     }
+     if ($track_idx > 0) {
+      $resume_offset = $offsets->[$track_idx - 1];
+     } else {
+      $resume_offset = 0;
+     }
+     $resume_album = $play_album;
+     $do_restart = 1;
+     print("DEBUG: previous_track track_idx=$track_idx resume_offset=$resume_offset\n");
      kill(9, -$play_id);
-    }
-    elsif (-e q#pidap.generated.previous# || -e q#pidap.generated.restart#) {
+    } elsif (-e q#pidap.generated.previous# || -e q#pidap.generated.restart#) {
      kill(9, -$play_id);
     }
    }
@@ -677,7 +687,7 @@ sub play_one_album {
   }
   if ($do_restart || $restart_offset > 0) {
    $resume_album = $play_album;
-   $resume_offset = $do_restart ? 0 : $restart_offset;
+   $resume_offset = $do_restart ? $resume_offset : $restart_offset;
   }
   return q#restart#;
  }
