@@ -37,7 +37,11 @@ my %pressed = ();
 my %press_time = ();
 my %last_event = ();
 my $combo_active_until = 0;
-my $gpiomon_pid = 0;
+my $y_pending = 0;
+my $WIRINGPI_FH = 0;
+my $pidap_pid = 0;
+my $last_play_pid = 0;
+my $album_start = 0;
 
 # Always use our own /proc-based kill function so we are sure to hit
 # descendants of the play pid (Proc::Killfam without Proc::ProcessTable
@@ -71,60 +75,44 @@ sub parse_map {
     return \%map;
 }
 
-sub find_gpio_chip {
-    return $GPIO_CHIP if $GPIO_CHIP;
+sub start_wiringpi_interrupts {
+    require WiringPi::API;
 
-    my $chip = '/dev/gpiochip0';
-    my @chips;
-    if (open(my $gd, '-|', 'gpiodetect')) {
-        while (<$gd>) {
-            chomp;
-            if (/^(\S+)\s+.*\((\d+)\s*lines\)/) {
-                push @chips, { name => $1, lines => $2 };
+    log_msg('Initializing WiringPi GPIO (BCM numbering)');
+    if (WiringPi::API::setup_gpio() < 0) {
+        die "wiringPi setup failed";
+    }
+
+    for my $pin (@BUTTONS) {
+        WiringPi::API::pin_mode($pin, WiringPi::API::INPUT());
+        WiringPi::API::pull_up_down($pin, WiringPi::API::PUD_UP());
+
+        my $cb = sub {
+            my ($edge, $ts) = @_;
+            my $now = Time::HiRes::time();
+            if ($now - ($last_event{$pin} || 0) < 0.05) {
+                return;
             }
-        }
-        close($gd);
-    }
-    if (@chips) {
-        # Prefer the SoC chip: most lines, or name containing bcm/pinctrl.
-        @chips = sort {
-            my $aa = ($a->{name} =~ /bcm|pinctrl/i) ? 1 : 0;
-            my $bb = ($b->{name} =~ /bcm|pinctrl/i) ? 1 : 0;
-            $bb <=> $aa || $b->{lines} <=> $a->{lines}
-        } @chips;
-        $chip = '/dev/' . $chips[0]{name};
-    }
-    return $chip;
-}
+            $last_event{$pin} = $now;
+            my $label = $PIN_TO_LABEL{$pin};
+            return unless defined $label;
 
-sub start_gpiomon {
-    my $chip = find_gpio_chip();
-    log_msg("Using GPIO chip: $chip");
+            if ($edge == WiringPi::API::INT_EDGE_FALLING()) {
+                handle_press($pin, $label);
+            } else {
+                handle_release($pin, $label);
+            }
+        };
 
-    my @cmd = (
-        'gpiomon',
-        '--bias=pull-up',
-        $chip,
-        @BUTTONS,
-    );
-
-    my $pid = open(my $fh, '-|', @cmd);
-    if (!defined $pid) {
-        # Try without bias if the tool/kernel doesn't support it.
-        log_msg('gpiomon with --bias failed, trying without bias');
-        @cmd = (
-            'gpiomon',
-            $chip,
-            @BUTTONS,
-        );
-        $pid = open(my $fh2, '-|', @cmd);
-        if (!defined $pid) {
-            die "Failed to start gpiomon: $!";
-        }
-        $fh = $fh2;
+        WiringPi::API::set_interrupt($pin, WiringPi::API::INT_EDGE_BOTH(), $cb);
     }
 
-    $gpiomon_pid = $pid;
+    my $fd = WiringPi::API::interrupt_fd();
+    if ($fd < 0) {
+        die "No WiringPi interrupt fd available";
+    }
+    open(my $fh, '<&', $fd) or die "Failed to duplicate interrupt fd: $!";
+    $WIRINGPI_FH = $fh;
     $fh->autoflush(0);
     return $fh;
 }
@@ -138,7 +126,6 @@ sub get_play_pid {
             $pid = int($1);
         }
     }
-    log_msg("PID file $PID_FILE -> play pid=$pid") if $pid;
     return $pid;
 }
 
@@ -171,6 +158,103 @@ sub _get_children {
     }
     closedir($dh);
     return @children;
+}
+
+sub get_pid_parent {
+    my ($pid) = @_;
+    return 0 unless $pid && -r "/proc/$pid/status";
+    if (open(my $st, '<', "/proc/$pid/status")) {
+        while (<$st>) {
+            if (/^PPid:\s*(\d+)/) {
+                close($st);
+                return int($1);
+            }
+        }
+        close($st);
+    }
+    return 0;
+}
+
+sub get_process_cmdline {
+    my ($pid) = @_;
+    return '' unless $pid && -r "/proc/$pid/cmdline";
+    if (open(my $c, '<', "/proc/$pid/cmdline")) {
+        my $cmd = do { local $/; <$c> };
+        close($c);
+        return '' unless defined $cmd;
+        $cmd =~ s/\0/ /g;
+        return $cmd;
+    }
+    return '';
+}
+
+sub get_process_name {
+    my ($pid) = @_;
+    return '' unless $pid && -r "/proc/$pid/comm";
+    if (open(my $c, '<', "/proc/$pid/comm")) {
+        my $name = <$c>;
+        close($c);
+        return '' unless defined $name;
+        chomp $name;
+        return $name;
+    }
+    return '';
+}
+
+sub is_pidap {
+    my ($pid) = @_;
+    return 0 unless $pid && $pid > 1;
+    my $name = get_process_name($pid);
+    return 0 unless $name && ($name eq 'perl' || $name eq 'pidap');
+    my $cmd = get_process_cmdline($pid);
+    return ($cmd =~ /\bpidap\b/) ? 1 : 0;
+}
+
+sub init_pidap_pid {
+    if (@ARGV && $ARGV[0] =~ /^\d+$/) {
+        $pidap_pid = int($ARGV[0]);
+        log_msg("Using pidap PID from command line: $pidap_pid");
+        return;
+    }
+    my $ppid = getppid();
+    if (is_pidap($ppid)) {
+        $pidap_pid = $ppid;
+        log_msg("Using pidap PID from parent: $pidap_pid");
+        return;
+    }
+    log_msg('WARNING: not started by pidap and no pidap PID given; Y/B+Y signals disabled');
+}
+
+sub find_pidap_pid {
+    return $pidap_pid || 0;
+}
+
+sub is_play_paused {
+    my ($pid) = @_;
+    return 0 unless $pid;
+    if (open(my $st, '<', "/proc/$pid/stat")) {
+        my $line = <$st>;
+        close($st);
+        if (defined $line && $line =~ /^\d+\s+\S+\s+(\S)/) {
+            return ($1 eq 'T') ? 1 : 0;
+        }
+    }
+    return 0;
+}
+
+sub toggle_pause {
+    my $pid = get_play_pid();
+    if (!$pid) {
+        log_msg('No play process, cannot toggle pause');
+        return;
+    }
+    if (is_play_paused($pid)) {
+        log_msg('Resuming playback');
+        killfam('CONT', $pid);
+    } else {
+        log_msg('Pausing playback');
+        killfam('STOP', $pid);
+    }
 }
 
 sub kill_play {
@@ -206,11 +290,96 @@ sub next_album {
 }
 
 sub next_track {
-    log_msg('Next track');
-    kill_play(2);
+    log_msg('Next track: sending SIGUSR1 to pidap');
+    my $pidap_pid = find_pidap_pid();
+    if ($pidap_pid) {
+        kill 'USR1', $pidap_pid;
+    } else {
+        log_msg('No pidap to signal');
+    }
+}
+
+sub previous_album {
+    log_msg('Previous album');
+    my $flag_file = $PID_FILE;
+    $flag_file =~ s/[^\/]+$//;
+    $flag_file .= '/' if $flag_file && $flag_file !~ m|/$|;
+    $flag_file .= 'pidap.generated.previous';
+    if (open(my $rf, '>', $flag_file)) {
+        print $rf "1\n";
+        close($rf);
+    } else {
+        log_msg("Could not write previous flag: $!");
+    }
+    kill_play(9);
+    $combo_active_until = time + 0.3;
+}
+
+sub read_current_album {
+    my $cf = $PID_FILE;
+    $cf =~ s/[^\/]+$//;
+    $cf .= '/' if $cf && $cf !~ m|/$|;
+    $cf .= 'pidap.generated.current_album';
+    my ($album, $offset, @files, @durations);
+    if (open(my $f, '<', $cf)) {
+        while (<$f>) {
+            chomp;
+            if (/^album=(.+)/) {
+                $album = $1;
+            } elsif (/^offset=([0-9.]+)/) {
+                $offset = $1;
+            } elsif (/^track:(\d+):([0-9.]+)=(.+)/) {
+                my ($idx, $dur, $path) = ($1, $2, $3);
+                $files[$idx] = $path;
+                $durations[$idx] = $dur;
+            }
+        }
+        close($f);
+    }
+    return ($album, $offset, \@files, \@durations, $cf);
+}
+
+sub current_track_info {
+    my ($album, $start_offset, $files, $durations) = read_current_album();
+    return undef unless $album && @$durations;
+    my $total = 0;
+    $total += $_ for @$durations;
+    my $now = Time::HiRes::time();
+    my $start = $album_start || $now;
+    my $elapsed = $now - $start;
+    $elapsed = 0 if $elapsed < 0;
+    if ($elapsed >= $total) {
+        my $i = $#$durations;
+        my $track_start = $total - $durations->[$i];
+        return [$i, 0.0, $track_start];
+    }
+    my $cum = 0;
+    for my $i (0 .. $#$durations) {
+        $cum += $durations->[$i];
+        if ($cum > $elapsed) {
+            my $track_time = $elapsed - ($cum - $durations->[$i]);
+            my $track_start = $cum - $durations->[$i];
+            return [$i, $track_time, $track_start];
+        }
+    }
+    my $i = $#$durations;
+    my $track_start = $total - $durations->[$i];
+    return [$i, 0.0, $track_start];
+}
+
+sub previous_or_restart {
+    my $pidap_pid = find_pidap_pid();
+    log_msg("Previous/restart: sending SIGUSR2 to pidap pid=$pidap_pid");
+    if ($pidap_pid) {
+        kill 'USR2', $pidap_pid;
+    } else {
+        log_msg('No pidap to signal');
+    }
 }
 
 sub restart_album {
+    my ($offset) = @_;
+    $offset ||= 0;
     my $pid = get_play_pid();
     if (!$pid) {
         log_msg('Restart album: no play pid');
@@ -222,7 +391,11 @@ sub restart_album {
     $flag_file .= 'pidap.generated.restart';
     log_msg("Writing restart flag: $flag_file");
     if (open(my $rf, '>', $flag_file)) {
-        print $rf "1\n";
+        if ($offset > 0) {
+            print $rf "offset=$offset\n";
+        } else {
+            print $rf "1\n";
+        }
         close($rf);
     } else {
         log_msg("Could not write restart flag: $!");
@@ -264,9 +437,9 @@ sub handle_press {
         if (is_pressed('A')) {
             next_album();
         } elsif (is_pressed('B')) {
-            restart_album();
+            previous_or_restart();
         } elsif ($func eq 'next_track') {
-            next_track();
+            $y_pending = 1;
         } else {
             next_album();
         }
@@ -274,6 +447,15 @@ sub handle_press {
     }
 
     if ($func eq 'vol_up' || $func eq 'vol_down') {
+        if ($y_pending) {
+            if ($func eq 'vol_up') {
+                next_album();
+            } else {
+                previous_or_restart();
+            }
+            $y_pending = 0;
+            return;
+        }
         # Volume is applied on release unless a combo fired.
         return;
     }
@@ -288,6 +470,9 @@ sub handle_release {
     my $func = $BUTTON_MAP->{$label};
 
     if ($func eq 'lock') {
+        if (!$x_toggled && !$locked) {
+            toggle_pause();
+        }
         $x_armed = 0;
         $x_toggled = 0;
         return;
@@ -304,6 +489,12 @@ sub handle_release {
     }
 
     if ($locked) {
+        return;
+    }
+
+    if ($func eq 'next_track' && $y_pending) {
+        next_track();
+        $y_pending = 0;
         return;
     }
 
@@ -333,11 +524,25 @@ sub check_parent {
     }
 }
 
+sub check_play_pid {
+    my $pid = get_play_pid();
+    return unless $pid;
+    if ($pid != $last_play_pid) {
+        $last_play_pid = $pid;
+        my @ra = read_current_album();
+        my $offset = $ra[1] || 0;
+        $album_start = Time::HiRes::time() - $offset;
+        log_msg("New play pid $pid, album_start set to $album_start (offset $offset)");
+    }
+}
+
 sub cleanup {
-    if ($gpiomon_pid) {
-        kill 'TERM', $gpiomon_pid;
-        waitpid($gpiomon_pid, 0);
-        $gpiomon_pid = 0;
+    if ($WIRINGPI_FH) {
+        close($WIRINGPI_FH);
+        $WIRINGPI_FH = 0;
+    }
+    if ($INC{'WiringPi/API.pm'}) {
+        WiringPi::API::stop_interrupts();
     }
 }
 
@@ -355,8 +560,10 @@ $SIG{HUP} = 'IGNORE';
 log_msg("pidap_buttons.pl starting, PID=$$");
 log_msg("Button map: " . join(',', map { "$_." . ($BUTTON_MAP->{$_} || '') } @LABELS));
 
-my $gpiomon_fh = start_gpiomon();
-my $sel = IO::Select->new($gpiomon_fh);
+my $wiringpi_fh = start_wiringpi_interrupts();
+my $sel = IO::Select->new($wiringpi_fh);
+
+init_pidap_pid();
 
 while (1) {
     check_parent();
@@ -364,42 +571,7 @@ while (1) {
 
     my @ready = $sel->can_read(0.05);
     if (@ready) {
-        my $line = <$gpiomon_fh>;
-        if (!defined $line) {
-            # EOF: gpiomon exited.
-            log_msg('gpiomon closed output, exiting');
-            cleanup();
-            exit(1);
-        }
-        chomp $line;
-        log_msg("gpiomon: $line") if $ENV{PIDAP_DEBUG};
-
-        # Parse "event: FALLING EDGE offset: 5 timestamp: [...]"
-        if ($line =~ /(RISING|FALLING).*?offset:\s*(\d+)/i) {
-            my $edge = lc $1;
-            my $pin = int($2);
-            my $label = $PIN_TO_LABEL{$pin};
-            next unless defined $label;
-
-            my $now = Time::HiRes::time();
-            if ($now - ($last_event{$pin} || 0) < 0.05) {
-                next;
-            }
-            $last_event{$pin} = $now;
-
-            if ($edge eq 'falling') {
-                handle_press($pin, $label);
-            } else {
-                handle_release($pin, $label);
-            }
-        }
-    }
-
-    # Reap gpiomon if it died unexpectedly.
-    my $dead = waitpid($gpiomon_pid, WNOHANG);
-    if ($dead == $gpiomon_pid) {
-        log_msg("gpiomon exited (rc=$?)");
-        exit(1);
+        WiringPi::API::dispatch_interrupts();
     }
 }
 

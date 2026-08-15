@@ -473,13 +473,23 @@ def album_restart_or_previous():
         restart_album(0)
 
 
+def _send_sigusr1_to_parent():
+    try:
+        parent = os.getppid()
+        if parent > 1:
+            os.kill(parent, signal.SIGUSR1)
+    except Exception as e:
+        log(f'Could not signal parent: {e}')
+
+
 def next_track_or_album():
+    global album_start
     info = current_track_info()
     with state_lock:
         durations = list(album_durations)
     if info is None:
-        log('No track info, restarting album')
-        restart_album(0)
+        log('No track info, sending next-track signal to parent')
+        _send_sigusr1_to_parent()
         return
     idx, track_time, track_start = info
     if idx == len(durations) - 1:
@@ -487,8 +497,10 @@ def next_track_or_album():
         next_album()
     else:
         next_start = track_start + durations[idx]
-        log(f'Y: skipping to next track at offset {next_start:.2f}s')
-        restart_album(next_start)
+        log(f'Y: sending next-track signal to parent (target {next_start:.2f}s)')
+        _send_sigusr1_to_parent()
+        with state_lock:
+            album_start = time.time() - next_start
 
 
 def vol_button_thread(pin, func):

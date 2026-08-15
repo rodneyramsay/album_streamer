@@ -6,6 +6,16 @@ use Getopt::Std;
 use FindBin;
 use Time::HiRes;
 
+#
+# Button handler asks pidap to skip to the next track via SIGUSR1,
+# or asks for previous/restart via SIGUSR2 (B+Y).
+#
+our $g_skip_track = 0;
+our $g_prev_or_restart = 0;
+our $g_prev_or_restart_time = 0;
+$SIG{USR1} = sub { $g_skip_track = 1; };
+$SIG{USR2} = sub { $g_prev_or_restart = 1; $g_prev_or_restart_time = Time::HiRes::time(); };
+
 
 $usage =
     "pidap [-c <category>] [-a <artist>] [-l <album>] [-m <mount>] [-p] [-q]\n" .
@@ -307,7 +317,7 @@ while($run) {
 #
 sub start_gpio_handler() {
 
-   my $handler = "$FindBin::Bin/pidap_buttons.py";
+   my $handler = "$FindBin::Bin/pidap_buttons.pl";
 
    unless(-r $handler) {
       print "Warning: $handler not found, button control disabled\n";
@@ -320,7 +330,7 @@ sub start_gpio_handler() {
    die "Failed to fork GPIO handler\n" unless defined $pid;
 
    if($pid == 0) {
-      exec("python3", $handler) or die "Failed to exec $handler: $!\n";
+      exec("perl", $handler) or die "Failed to exec $handler: $!\n";
    }
 
    print "GPIO handler pid: $pid\n";
@@ -480,219 +490,219 @@ sub write_place_file {
    }
 }
 
-sub play_albums() {
-
-   my (@albums) = (@_);
-
-   #
-   # Loop through albums and play all tracks in album folder.
-   #
-   my $volume_initialized = 0;
-   for ($ii = $first_lp; $ii <= $#albums; $ii++) {
-      print("Album Name: $albums[$ii]\n");
-      $play_album = $albums[$ii];
-
-      #
-      # Does this album end with disk_<n>?
-      # Cut off the disk number and play them all
-      #
-      if($play_album =~ m/(dis(c|k)_?(\d+))/i) {
-	 ($disc_name, $ck, $disc_num) = ($1, $2, $3);
-
-	 print("DISC_NAME=$disc_name DISC_NUM=$disc_num\n");
-
-	 $play_album =~ s/$disc_num//;
+sub find_play_child {
+   my ($ppid) = @_;
+   my $dh;
+   return 0 unless opendir($dh, '/proc');
+   while (my $pid = readdir($dh)) {
+      next unless $pid =~ /^\d+$/;
+      next if $pid == $$;
+      my $ppid_in_status = 0;
+      if (open(my $st, '<', "/proc/$pid/status")) {
+         while (<$st>) {
+            $ppid_in_status = $1 if /^PPid:\s*(\d+)/;
+         }
+         close($st);
       }
-
-      unless(defined($opt_p)) {
-	 #
-	 # Remember where we are in the playlist.
-	 #
-	 &write_place_file($place_file, $ii);
-
-	 #
-	 # Clear any stale restart request before starting playback.
-	 #
-	 unlink("pidap.generated.restart") if(-e "pidap.generated.restart");
-
-	 #
-	 # Precompute the track boundaries for this album so the button
-	 # handler can map playback time to tracks without calling soxi.
-	 #
-	 my ($files, $durations, $offsets, $total) = &get_album_offsets($play_album);
-
-	 #
-	 # Flash the LED while loading/starting the next album, then
-	 # turn it off once the play process is running.
-	 #
-	 &led_flash();
-
-	 my $play_start_offset = 0;
-	 $play_id = 0;
-
-	 #
-	 # Fork off process to stream music.
-	 # Use <Album_Name>*/*.flac to catch all disc numbers.
-	 #
-	 if ($resume_album && $play_album eq $resume_album && $resume_offset > 0) {
-	    $play_start_offset = $resume_offset;
-	    &write_current_album($play_album, $resume_offset, $files, $durations);
-	    my $resume_cmd = &build_resume_cmd($play_album, $resume_offset, $files, $durations);
-	    if ($resume_cmd) {
-	       print("Resuming $play_album at offset $resume_offset\n");
-	       $play_id = &print_run($resume_cmd);
-	       $first_lp = 0;
-	    } else {
-	       print("Warning: could not build resume command for $play_album\n");
-	    }
-	    $resume_album = '';
-	    $resume_offset = 0;
-	    unlink($resume_file) if -e $resume_file;
-	 } else {
-	    &write_current_album($play_album, 0, $files, $durations);
-	    $play_id = &print_run("play ${play_album}*/*.flac");
-	    
-	 }
-
-	 &led_off();
-
-	 #
-	 # Record play pid for the GPIO button handler
-	 #
-	 &write_play_pid($play_id);
-
-	 #
-	 # Set the initial playback volume once on first start.
-	 #
-	 if (!$volume_initialized) {
-	    &set_initial_volume;
-	    $volume_initialized = 1;
-	 }
-
-	 #
-	 # Wait for streaming to finish for this lp, blinking the LED each
-	 # time the playback position crosses a track boundary.
-	 #
-	 if ($play_id > 0) {
-	    my $start_time = Time::HiRes::time();
-	    my $track_blink_until = 0;
-	    my $next_offset_idx = 0;
-	    for my $i (0 .. $#$offsets) {
-	       last if $offsets->[$i] > $play_start_offset + 0.05;
-	       $next_offset_idx = $i + 1;
-	    }
-
-	    # Show the track that is playing now on the TFT.
-    my $current_track_idx = ($next_offset_idx > 0) ? ($next_offset_idx - 1) : 0;
-    # &update_display($ii, $play_album, $files->[$current_track_idx]);
-
-	    if ($play_start_offset > 0.05) {
-	       for my $i (0 .. $#$offsets) {
-	          if (abs($offsets->[$i] - $play_start_offset) < 0.05) {
-	             &led_track_blink();
-	             $track_blink_until = $start_time + 0.15;
-	             last;
-	          }
-	       }
-	    }
-
-	    # Detect play pauses via /proc and account for pause time so
-	    # track display/LEDs stay in sync with actual playback.
-	    my $paused = 0;
-	    my $pause_start = 0;
-	    my $total_pause_time = 0.0;
-
-	    while ($play_id > 0) {
-	       my $res = waitpid($play_id, WNOHANG);
-	       if ($res == 0) {
-		  #
-		  # If the button handler asked for previous/restart and the play
-		  # family is still running, force a group kill so we can exit the
-		  # loop and act on the flag.  The child setpgrp above makes this
-		  # safe: the group id is the play child's pid, not pidap's group.
-		  #
-		  if (-e "pidap.generated.previous" || -e "pidap.generated.restart") {
-		     print("Forcing play family kill for button request\n");
-		     kill(9, -$play_id);
-		  }
-	       }
-	       last if $res > 0 || $res == -1;
-	       my $now = Time::HiRes::time();
-
-	       # Detect whether the play process is paused (State: T) and
-	       # correct the album clock so it does not advance while paused.
-	       my $play_state = '0';
-	       if (open(my $st, '<', "/proc/$play_id/status")) {
-	          while (<$st>) {
-	             $play_state = $1 if /^State:\s*(\S)/;
-	          }
-	          close($st);
-	       }
-	       if ($play_state eq 'T' && !$paused) {
-	          $paused = 1;
-	          $pause_start = $now;
-	       } elsif ($play_state ne 'T' && $paused) {
-	          $paused = 0;
-	          $total_pause_time += ($now - $pause_start);
-	       }
-	       my $effective_pause = $total_pause_time + ($paused ? ($now - $pause_start) : 0);
-	       my $album_time = $play_start_offset + ($now - $start_time - $effective_pause);
-	      # Track-boundary LED blink removed; only blink on file load.
-	       if ($track_blink_until && $now >= $track_blink_until) {
-	          &led_off();
-	          $track_blink_until = 0;
-	       }
-	       Time::HiRes::usleep(100_000);
-	    }
-	    &led_off();
-	 }
-
-	 #
-	 # If the button handler requested the previous album, back up.
-	 #
-	 if(-e "pidap.generated.previous") {
-	    unlink("pidap.generated.previous");
-	    print("Previous album\n");
-	    if($ii > 0) {
-	       $ii -= 2;
-	    } else {
-	       $ii = $#albums - 1;
-	    }
-	    next;
-	 }
-
-	 #
-	 # If the button handler requested a restart, replay this album.
-	 # If the file contains an offset, resume from that position.
-	 #
-	 if(-e "pidap.generated.restart") {
-	    my $restart_offset = 0;
-	    if(open(my $rf, '<', "pidap.generated.restart")) {
-	       while(<$rf>) {
-		  chomp;
-		  $restart_offset = $1 if(/^offset=([0-9.]+)/);
-	       }
-	       close($rf);
-	    }
-	    unlink("pidap.generated.restart");
-	    if($restart_offset > 0) {
-	       $resume_album = $play_album;
-	       $resume_offset = $restart_offset;
-	    }
-	    print("Restarting current album");
-	    print(" at offset $resume_offset") if $resume_offset;
-	    print("\n");
-	    redo;
-	 }
+      next unless $ppid_in_status == $ppid;
+      my $comm = '';
+      if (open(my $c, '<', "/proc/$pid/comm")) {
+         $comm = <$c>;
+         chomp($comm) if defined($comm);
+         close($c);
       }
+      return $pid if $comm =~ /^(sox|play|aplay)$/;
+      my $found = &find_play_child($pid);
+      return $found if $found;
    }
+   closedir($dh);
+   return 0;
+}
 
-   #
-   # Reached the end of the playlist; clear the saved place.
-   #
-   unlink($place_file) if -e $place_file;
+sub play_one_album {
+ my ($play_album, $volume_initialized_ref, $album_offsets_cache_ref) = @_;
+ if ($play_album =~ m/(dis(c|k)_?(\d+))/i) {
+  my ($disc_name, $disc_num) = ($1, $3);
+  $play_album =~ s/$disc_num//;
+ }
+ unlink(q#pidap.generated.restart#) if -e q#pidap.generated.restart#;
+ my ($files, $durations, $offsets, $total);
+ if (exists $album_offsets_cache_ref->{$play_album}) {
+  ($files, $durations, $offsets, $total) = @{$album_offsets_cache_ref->{$play_album}};
+ } else {
+  ($files, $durations, $offsets, $total) = &get_album_offsets($play_album);
+  $album_offsets_cache_ref->{$play_album} = [$files, $durations, $offsets, $total];
+ }
+ &led_flash();
+ my $play_start_offset = 0;
+ my $play_id = 0;
+ if ($resume_album && $play_album eq $resume_album && $resume_offset > 0) {
+  $play_start_offset = $resume_offset;
+  &write_current_album($play_album, $resume_offset, $files, $durations);
+  my $resume_cmd = &build_resume_cmd($play_album, $resume_offset, $files, $durations);
+  if ($resume_cmd) {
+   $play_id = &print_run($resume_cmd);
+   $first_lp = 0;
+  }
+  $resume_album = q{};
+  $resume_offset = 0;
+  unlink($resume_file) if -e $resume_file;
+ } else {
+  &write_current_album($play_album, 0, $files, $durations);
+  $play_id = &print_run(qq#play ${play_album}*/*.flac#);
+ }
+ &led_off();
+ &write_play_pid($play_id);
+ if (!$$volume_initialized_ref) {
+  &set_initial_volume;
+  $$volume_initialized_ref = 1;
+ }
+ my $do_previous = 0;
+ my $do_restart = 0;
+ if ($play_id > 0) {
+  my $start_time = Time::HiRes::time();
+  my $track_blink_until = 0;
+  my $next_offset_idx = 0;
+  for my $i (0 .. $#$offsets) {
+   last if $offsets->[$i] > $play_start_offset + 0.05;
+   $next_offset_idx = $i + 1;
+  }
+  if ($play_start_offset > 0.05) {
+   for my $i (0 .. $#$offsets) {
+    if (abs($offsets->[$i] - $play_start_offset) < 0.05) {
+     &led_track_blink();
+     $track_blink_until = $start_time + 0.15;
+     last;
+    }
+   }
+  }
+  my $paused = 0;
+  my $pause_start = 0;
+  my $total_pause_time = 0.0;
+  while ($play_id > 0) {
+   my $res = waitpid($play_id, WNOHANG);
+   if ($res == 0) {
+    if ($g_skip_track) {
+     $g_skip_track = 0;
+     if ($next_offset_idx <= $#$offsets) {
+      my $next_offset = $offsets->[$next_offset_idx];
+      my $sox_pid = &find_play_child($play_id);
+      kill(2, $sox_pid) if $sox_pid > 0;
+      $play_start_offset = $next_offset;
+      $start_time = Time::HiRes::time();
+      for my $i (0 .. $#$offsets) {
+       last if $offsets->[$i] > $play_start_offset + 0.05;
+       $next_offset_idx = $i + 1;
+      }
+      if ($play_start_offset > 0.05) {
+       for my $i (0 .. $#$offsets) {
+        if (abs($offsets->[$i] - $play_start_offset) < 0.05) {
+         &led_track_blink();
+         $track_blink_until = $start_time + 0.15;
+         last;
+        }
+       }
+      }
+     }
+    }
+    if ($g_prev_or_restart) {
+     $g_prev_or_restart = 0;
+     print("DEBUG: SIGUSR2 received\n");
+     my $now = $g_prev_or_restart_time;
+     my $effective_pause = $total_pause_time + ($paused ? ($now - $pause_start) : 0);
+     my $album_time = $play_start_offset + ($now - $start_time - $effective_pause);
+     my $track_idx = 0;
+     for my $i (0 .. $#$offsets) {
+      last if $offsets->[$i] > $album_time;
+      $track_idx = $i;
+     }
+     my $track_start = $offsets->[$track_idx];
+     my $track_time = $album_time - $track_start;
+     if ($track_idx == 0 && $track_time <= 15) {
+      $do_previous = 1;
+     } else {
+      $do_restart = 1;
+      $resume_album = $play_album;
+      $resume_offset = 0;
+     }
+     print("DEBUG: track_idx=$track_idx track_time=$track_time do_previous=$do_previous do_restart=$do_restart\n");
+     kill(9, -$play_id);
+    }
+    elsif (-e q#pidap.generated.previous# || -e q#pidap.generated.restart#) {
+     kill(9, -$play_id);
+    }
+   }
+   last if $res > 0 || $res == -1;
+   my $now = Time::HiRes::time();
+   my $play_state = q#0#;
+   if (open(my $st, q#<#, qq#/proc/$play_id/status#)) {
+    while (<$st>) {
+     $play_state = $1 if /^State:\s*(\S)/;
+    }
+    close($st);
+   }
+   if ($play_state eq q#T# && !$paused) {
+    $paused = 1;
+    $pause_start = $now;
+   } elsif ($play_state ne q#T# && $paused) {
+    $paused = 0;
+    $total_pause_time += ($now - $pause_start);
+   }
+   my $effective_pause = $total_pause_time + ($paused ? ($now - $pause_start) : 0);
+   my $album_time = $play_start_offset + ($now - $start_time - $effective_pause);
+   if ($track_blink_until && $now >= $track_blink_until) {
+    &led_off();
+    $track_blink_until = 0;
+   }
+   Time::HiRes::usleep(100_000);
+  }
+  &led_off();
+ }
+ print("DEBUG: before return do_previous=$do_previous do_restart=$do_restart\n");
+ if ($do_previous || -e q#pidap.generated.previous#) {
+  unlink(q#pidap.generated.previous#) if -e q#pidap.generated.previous#;
+  return q#prev#;
+ }
+ if ($do_restart || -e q#pidap.generated.restart#) {
+  my $restart_offset = 0;
+  if (-e q#pidap.generated.restart#) {
+   if (open(my $rf, q#<#, q#pidap.generated.restart#)) {
+    while (<$rf>) {
+     chomp;
+     $restart_offset = $1 if (/^offset=([0-9.]+)/);
+    }
+    close($rf);
+   }
+   unlink(q#pidap.generated.restart#);
+  }
+  if ($do_restart || $restart_offset > 0) {
+   $resume_album = $play_album;
+   $resume_offset = $do_restart ? 0 : $restart_offset;
+  }
+  return q#restart#;
+ }
+ return q#next#;
+}
 
-   &led_off();
+sub play_albums() {
+ my (@albums) = @_;
+ my $volume_initialized = 0;
+ my %album_offsets_cache = ();
+ my $ii = $first_lp;
+ while ($ii <= $#albums) {
+  print("Album Name($ii): $albums[$ii]\n");
+  &write_place_file($place_file, $ii);
+  my $action = &play_one_album($albums[$ii], \$volume_initialized, \%album_offsets_cache);
+  if ($action eq q#prev#) {
+   if ($ii > 0) { $ii--; } else { $ii = $#albums; }
+  } elsif ($action eq q#restart#) {
+   # stay on same album
+  } else {
+   $ii++;
+  }
+ }
+ unlink($place_file) if -e $place_file;
+ &led_off();
 }
 
 #
