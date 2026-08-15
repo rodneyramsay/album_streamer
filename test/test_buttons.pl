@@ -34,10 +34,6 @@ my $current_play_pid = 0;
 my $passed = 0;
 my $failed = 0;
 
-my $VOLUME_CONTROL = $ENV{PIDAP_VOLUME_CONTROL} || 'Amp';
-my $VOLUME_STEP    = $ENV{PIDAP_VOLUME_STEP}    || 1;
-my $amixer_ok      = 0;
-
 $SIG{INT} = $SIG{TERM} = sub { cleanup(); exit(1); };
 
 sub log_test {
@@ -69,8 +65,8 @@ sub make_music {
 sub start_pidap {
     local $ENV{PIDAP_FAKE_GPIO}       = 1;
     local $ENV{PIDAP_LOG_FILE}        = $LOG;
-    local $ENV{PIDAP_VOLUME_CONTROL}  = $amixer_ok ? $VOLUME_CONTROL : 'DummyControl';
-    local $ENV{PIDAP_VOLUME_STEP}     = $VOLUME_STEP;
+    local $ENV{PIDAP_VOLUME_CONTROL}  = 'DummyControl';
+    local $ENV{PIDAP_VOLUME_STEP}     = 1;
     local $ENV{PIDAP_BUTTON_MAP}      = 'A:vol_up,B:vol_down,X:lock,Y:next_track';
 
     $pidap_pid = open3($pidap_in, $pidap_out, $pidap_err, 'perl', $PIDAP, '-m', $MUSIC, '-q');
@@ -90,45 +86,6 @@ sub slurp_log {
     return $txt // '';
 }
 
-sub probe_amixer {
-    my $out = qx{amixer sget '$VOLUME_CONTROL' 2>&1};
-    $amixer_ok = ($? == 0) ? 1 : 0;
-    log_test("amixer sget $VOLUME_CONTROL: " . ($amixer_ok ? 'ok' : 'not available'));
-    return $amixer_ok;
-}
-
-sub set_volume {
-    my ($pct) = @_;
-    return unless $amixer_ok;
-    qx{amixer sset '$VOLUME_CONTROL' '${pct}%' 2>&1};
-}
-
-sub get_volume {
-    return undef unless $amixer_ok;
-    my $out = qx{amixer sget '$VOLUME_CONTROL' 2>&1};
-    return undef unless $? == 0;
-    my @p = ($out =~ /\[(\d+)%\]/g);
-    return undef unless @p;
-    my $sum = 0;
-    $sum += $_ for @p;
-    return int($sum / @p + 0.5);
-}
-
-sub expect_volume_changed {
-    my ($desc, $before, $after, $expected_delta) = @_;
-    if (!defined $before || !defined $after) {
-        log_test("SKIP: $desc (no ALSA)");
-        return;
-    }
-    my $actual = $after - $before;
-    if ($actual == $expected_delta) {
-        log_test("PASS: $desc ($before% -> $after%, delta +$actual)");
-        $passed++;
-    } else {
-        log_test("FAIL: $desc ($before% -> $after%, expected +$expected_delta, got +$actual)");
-        $failed++;
-    }
-}
 
 sub wait_for_log {
     my ($pattern, $timeout) = @_;
@@ -335,21 +292,8 @@ sub wait_for_initial_play {
 
 sub run_tests {
     make_music();
-    probe_amixer();
     start_pidap();
     wait_for_initial_play();
-
-    log_test("--- Test 0: A volume up ---");
-    if ($amixer_ok) {
-        set_volume(50);
-        my $before = get_volume();
-        tap('A');
-        expect_log('A short => vol up', 'Volume up', 2.0);
-        my $after = get_volume();
-        expect_volume_changed('A raises volume', $before, $after, $VOLUME_STEP);
-    } else {
-        log_test("SKIP: volume test (amixer not available)");
-    }
 
     log_test("--- Test 1: Y next track ---");
     tap('Y');

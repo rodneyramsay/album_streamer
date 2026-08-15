@@ -1,0 +1,19 @@
+
+
+[Unit]
+Description=PIDAP - Pi Digital Audio Player
+After=sound.target pidap-playlist.service local-fs.target
+Wants=pidap-playlist.service
+RequiresMountsFor=/usr/local/Music
+
+[Service]
+Type=simple
+WorkingDirectory=/home/rodney/album_streamer
+ExecStart=/usr/bin/perl /home/rodney/album_streamer/pidap
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" "PIDAP_PLAY_ONLY=1"
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

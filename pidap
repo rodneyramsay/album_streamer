@@ -18,7 +18,10 @@ $SIG{USR2} = sub { $g_prev_or_restart = 1; $g_prev_or_restart_time = Time::HiRes
 
 
 $usage =
-    "pidap [-c <category>] [-a <artist>] [-l <album>] [-m <mount>] [-p] [-q]\n" .
+    "pidap [-B] [-P] [-c <category>] [-a <artist>] [-l <album>] [-m <mount>] [-p] [-q] [-r]\n" .
+    "\n" .
+    "  -B  build (playlist generator) mode: create playlist and exit\n" .
+    "  -P  play-only mode: do not generate a new playlist\n" .
     "\n" .
     "<category>, <artist>, and <album> arguments can be perl regex or simple string\n" .
     "\n" .
@@ -33,7 +36,7 @@ $usage =
     "   (override with PIDAP_BUTTON_MAP env var)\n" .
     "\n\n";
 
-getopts("a:c:hl:m:pqr");
+getopts("a:Bc:hl:m:pPqr");
 
 if(defined($opt_h)) {
    print $usage;
@@ -61,6 +64,9 @@ $ENV{PIDAP_VOLUME_CONTROL} = $ENV{PIDAP_VOLUME_CONTROL} || "Amp";
 $ENV{PIDAP_VOLUME_STEP} = $ENV{PIDAP_VOLUME_STEP} || "2";
 $ENV{PIDAP_INITIAL_VOLUME} = $ENV{PIDAP_INITIAL_VOLUME} || "40";
 
+my $build_only = $ENV{PIDAP_BUILD_PLAYLIST} ? 1 : (defined($opt_B) ? 1 : 0);
+my $play_only  = $ENV{PIDAP_PLAY_ONLY} ? 1 : (defined($opt_P) ? 1 : 0);
+
 #
 # LED control. Default to the Pi's on-board ACT/led0 LED.
 #
@@ -76,8 +82,13 @@ if($led_brightness && !$led_trigger) {
 }
 
 unlink($play_pid_file) if(-e $play_pid_file);
-&start_gpio_handler();
-&led_init();
+
+my $boot_mode = $build_only ? &read_boot_gpio() : '';
+
+unless ($build_only) {
+    &start_gpio_handler();
+    &led_init();
+}
 
 
 ######################################################################
@@ -105,7 +116,14 @@ my $resume_offset = 0;
 #
 #   Music/<Category>/<Artist>/<Album>/<Track>.flac
 #
+my $boot_applied = 0;
+
 while($run) {
+
+   if ($build_only) {
+      my @usb_mounts = &mount_usb_devices();
+      &link_usb_mounts(@usb_mounts);
+   }
 
    print
 ("Building Album List");
@@ -239,10 +257,21 @@ while($run) {
    }
 
    #
-   # No saved playlist: build a fresh one, shuffle it, and save it.
+   # No saved playlist: build a fresh one, shuffle or sort it, and save it.
+   # In play-only mode, do not generate the playlist here; that is the
+   # playlist generator's job.
    #
    unless ($loaded_playlist) {
-      @play_albums = &rand_array(@play_albums);
+      if ($play_only) {
+         print "No playlist file ($playlist_file) available, cannot play\n";
+         exit(1);
+      }
+
+      if ($sorted_playlist) {
+         @play_albums = sort @play_albums;
+      } else {
+         @play_albums = &rand_array(@play_albums);
+      }
 
       if (!$using_filters) {
          if (open(my $cf, '>', $playlist_file)) {
@@ -254,6 +283,40 @@ while($run) {
             print "Warning: could not write $playlist_file: $!\n";
          }
          unlink($place_file) if -e $place_file;
+      }
+   }
+
+   my $sorted_playlist = 0;
+
+   #
+   # Boot-time button actions.
+   #
+   if ($boot_mode && !$boot_applied) {
+      $boot_applied = 1;
+      if ($boot_mode eq 'A') {
+         print "Boot: hold A - regenerate random playlist\n";
+         unlink($playlist_file) if -e $playlist_file;
+         unlink($place_file) if -e $place_file;
+         unlink($resume_file) if -e $resume_file;
+         $resume_album = '';
+         $resume_offset = 0;
+         $first_lp = 0;
+      } elsif ($boot_mode eq 'B') {
+         print "Boot: hold B - sorted playlist\n";
+         $sorted_playlist = 1;
+         unlink($playlist_file) if -e $playlist_file;
+         unlink($place_file) if -e $place_file;
+         unlink($resume_file) if -e $resume_file;
+         $resume_album = '';
+         $resume_offset = 0;
+         $first_lp = 0;
+      } elsif ($boot_mode eq 'X') {
+         print "Boot: hold X - start from first track\n";
+         unlink($place_file) if -e $place_file;
+         unlink($resume_file) if -e $resume_file;
+         $resume_album = '';
+         $resume_offset = 0;
+         $first_lp = 0;
       }
    }
 
@@ -302,6 +365,11 @@ while($run) {
       }
    }
 
+   if ($build_only) {
+      print "Playlist built ($#play_albums albums), exiting build-only mode\n";
+      exit(0);
+   }
+
    &play_albums(@play_albums);
 
    #
@@ -341,6 +409,151 @@ sub start_gpio_handler() {
 
    print "GPIO handler pid: $pid\n";
    return $pid;
+}
+
+sub is_gpio_low {
+    my ($val) = @_;
+    return 0 unless defined $val;
+    return 1 if $val eq '0';
+    return 1 if $val =~ /^(inactive|off|low)$/i;
+    return 0;
+}
+
+sub read_boot_gpio() {
+
+   my @cmd = ('gpioget', '-c', 'gpiochip0', '--bias=pull-up', 5, 6, 16, 24);
+   print "Boot GPIO: running @cmd\n";
+   my $out = `@cmd 2>/dev/null`;
+   print "Boot GPIO (bias): $out\n" if defined $out;
+   unless (defined $out && $out =~ /\S/) {
+      my @plain = ('gpioget', '-c', 'gpiochip0', 5, 6, 16, 24);
+      print "Boot GPIO: falling back to @plain\n";
+      $out = `@plain 2>/dev/null`;
+      print "Boot GPIO (plain): $out\n" if defined $out;
+   }
+   unless (defined $out && $out =~ /\S/) {
+      print "Boot GPIO: no readable button state\n";
+      return '';
+   }
+
+   my @pin_order = (5, 6, 16, 24);
+   my @labels = ('A', 'B', 'X', 'Y');
+   my %state = ();
+
+   # libgpiod 2.x style: "5"=active "6"=inactive ...
+   for my $tok (split /\s+/, $out) {
+      if ($tok =~ /^"(\d+)"=(\S+)$/) {
+         $state{$1} = $2;
+      }
+   }
+
+   # Older style: one value per line (0/1) in pin order.
+   unless (%state) {
+      my @vals = split /\s+/, $out;
+      for my $i (0 .. $#pin_order) {
+         $state{$pin_order[$i]} = $vals[$i] if defined $vals[$i];
+      }
+   }
+
+   for my $i (0 .. $#pin_order) {
+      my $pin = $pin_order[$i];
+      next unless exists $state{$pin};
+      if (&is_gpio_low($state{$pin})) {
+         print "Boot GPIO: button $labels[$i] held ($pin = $state{$pin})\n";
+         return $labels[$i] if $labels[$i] =~ /^(A|B|X)$/;
+      }
+   }
+   print "Boot GPIO: no A/B/X button held\n";
+   return '';
+}
+
+sub find_usb_partitions {
+
+   my @found = ();
+   my $lsblk = `lsblk -P -o PATH,TYPE,TRAN,FSTYPE,MOUNTPOINT 2>/dev/null`;
+   return @found unless defined $lsblk && $lsblk =~ /\S/;
+
+   for my $line (split /\n/, $lsblk) {
+      next unless $line =~ /\S/;
+      my %f = ();
+      while ($line =~ /(\w+)="([^"]*)"/g) {
+         $f{$1} = $2;
+      }
+      next unless $f{TYPE} && $f{TYPE} eq 'part';
+      next unless $f{FSTYPE} && $f{FSTYPE} =~ /^(vfat|exfat|ntfs|ext4|btrfs|auto|xfs)/i;
+      next if $f{MOUNTPOINT} && $f{MOUNTPOINT} =~ /\S/;
+      next unless ($f{TRAN} && $f{TRAN} eq 'usb') || ($f{RM} && $f{RM} eq '1');
+      push @found, $f{PATH};
+   }
+
+   return @found;
+}
+
+sub mount_usb_devices {
+
+   my @usb_mounts = ();
+   my @parts = &find_usb_partitions();
+   return @usb_mounts unless @parts;
+
+   `mkdir -p /media` unless -d '/media';
+
+   my $n = 1;
+   for my $part (@parts) {
+      my $dir = sprintf('/media/USB%02d', $n++);
+      `mkdir -p "$dir"`;
+
+      my $rc = system('mount', $part, $dir);
+      if ($rc != 0) {
+         my $fs = `blkid -s TYPE -o value "$part" 2>/dev/null`;
+         chomp($fs) if $fs;
+         $fs = 'auto' unless $fs;
+         $rc = system('mount', '-t', $fs, $part, $dir);
+      }
+
+      if ($rc == 0) {
+         push @usb_mounts, $dir;
+         print "Mounted USB partition $part on $dir\n";
+      } else {
+         print "Warning: failed to mount $part\n";
+         rmdir($dir) if -d $dir;
+      }
+   }
+
+   my $mfile = "$FindBin::Bin/pidap.generated.usb_mounts";
+   if (@usb_mounts) {
+      if (open(my $uf, '>', $mfile)) {
+         print $uf "$_\n" for @usb_mounts;
+         close($uf);
+      }
+   } else {
+      unlink($mfile) if -e $mfile;
+   }
+
+   return @usb_mounts;
+}
+
+sub link_usb_mounts {
+
+   my (@usb_dirs) = @_;
+
+   # Clean up stale USB symlinks under the main music mount.
+   if (-d $mount) {
+      for my $old (glob "$mount/USB*") {
+         unlink($old) if -l $old;
+      }
+   }
+
+   # Create new symlinks so pidap's normal scanner picks them up.
+   my $n = 1;
+   for my $dir (@usb_dirs) {
+      my $name = sprintf('USB%02d', $n++);
+      my $link = "$mount/$name";
+      if (symlink($dir, $link)) {
+         print "Linked $dir as $link\n";
+      } else {
+         print "Warning: failed to symlink $dir to $link: $!\n";
+      }
+   }
 }
 
 
@@ -422,6 +635,19 @@ sub write_current_album {
    } else {
       print "Warning: could not write $current_album_file: $!\n";
    }
+}
+
+sub read_current_album {
+   my ($album, $offset) = ('', 0);
+   if (-r $current_album_file && open(my $cf, '<', $current_album_file)) {
+      while (<$cf>) {
+         chomp;
+         $album = $1 if /^album=(.+)/;
+         $offset = $1 if /^offset=([0-9.]+)/;
+      }
+      close($cf);
+   }
+   return ($album, $offset);
 }
 
 sub soxi_duration {
@@ -698,7 +924,29 @@ sub play_albums() {
  my (@albums) = @_;
  my $volume_initialized = 0;
  my %album_offsets_cache = ();
+
+ # Resume from the actual last-played album if we can find it in
+ # the current playlist.  A stale place index (from an old playlist)
+ # can otherwise land on the wrong album after a playlist change.
+ my $resume_target = $resume_album;
+ my $resume_off = $resume_offset;
+ unless ($resume_target) {
+    ($resume_target, $resume_off) = &read_current_album;
+ }
  my $ii = $first_lp;
+ if ($resume_target) {
+    for my $i (0 .. $#albums) {
+       if ($albums[$i] eq $resume_target) {
+          $ii = $i;
+          $resume_album = $resume_target;
+          $resume_offset = $resume_off;
+          print("Resuming from current album: $resume_target at index $ii\n");
+          last;
+       }
+    }
+ }
+ $ii = 0 if $ii < 0 || $ii > $#albums;
+
  while ($ii <= $#albums) {
   print("Album Name($ii): $albums[$ii]\n");
   &write_place_file($place_file, $ii);

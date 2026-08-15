@@ -161,13 +161,15 @@ sub get_play_pid {
 
 sub _killfam_fallback {
     my ($sig, @pids) = @_;
+    my $sent = 0;
     for my $pid (@pids) {
         next unless $pid;
-        # Kill descendants first so they don't get reparented.
-        my @children = _get_children($pid);
-        _killfam_fallback($sig, @children);
-        kill $sig, $pid;
+        # The play pid is a process group leader; kill the whole group.
+        my $n = kill $sig, -$pid;
+        $n = kill $sig, $pid if $n == 0;
+        $sent += $n;
     }
+    return $sent;
 }
 
 sub _get_children {
@@ -605,7 +607,9 @@ sub handle_press {
 
 sub handle_release {
     my ($pin, $label) = @_;
+    my $was_pressed = $pressed{$label};
     $pressed{$label} = 0;
+    return unless $was_pressed;
 
     my $func = $BUTTON_MAP->{$label};
 
