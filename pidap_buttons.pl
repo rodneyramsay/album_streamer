@@ -5,6 +5,7 @@ use warnings;
 use POSIX qw(:sys_wait_h);
 use Time::HiRes qw(usleep gettimeofday);
 use IO::Select;
+use IO::Socket::IP;
 use FindBin;
 
 use vars qw($VERSION);
@@ -38,10 +39,29 @@ my %press_time = ();
 my %last_event = ();
 my $combo_active_until = 0;
 my $y_pending = 0;
-my $WIRINGPI_FH = 0;
 my $pidap_pid = 0;
 my $last_play_pid = 0;
 my $album_start = 0;
+
+my $PIGPIO_HOST = $ENV{PIDAP_PIGPIO_HOST} || '::1';
+my $PIGPIO_PORT = $ENV{PIDAP_PIGPIO_PORT} || 8888;
+my $PIGPIO_CMD;
+my $PIGPIO_NOTIF;
+my $PIGPIO_NOTIFY_HANDLE = -1;
+my $PIGPIO_NOTIFY_MASK = 0;
+my $PIGPIO_LAST_LEVEL = 0;
+my $PIGPIO_BUFFER = '';
+
+use constant {
+    PI_INPUT      => 0,
+    PI_OUTPUT     => 1,
+    PI_PUD_UP     => 2,
+    PI_PUD_OFF    => 0,
+    PI_CMD_MODES  => 0,
+    PI_CMD_PUD    => 2,
+    PI_CMD_NOIB   => 99,
+    PI_CMD_NB     => 19,
+};
 
 # Always use our own /proc-based kill function so we are sure to hit
 # descendants of the play pid (Proc::Killfam without Proc::ProcessTable
@@ -75,46 +95,101 @@ sub parse_map {
     return \%map;
 }
 
-sub start_wiringpi_interrupts {
-    require WiringPi::API;
-
-    log_msg('Initializing WiringPi GPIO (BCM numbering)');
-    if (WiringPi::API::setup_gpio() < 0) {
-        die "wiringPi setup failed";
+sub pigpio_send {
+    my ($sock, $cmd, $p1, $p2) = @_;
+    $p1 ||= 0;
+    $p2 ||= 0;
+    my $req = pack('V V V V', $cmd, $p1, $p2, 0);
+    my $sent = send($sock, $req, 0);
+    return -1 unless defined $sent && $sent == length($req);
+    my $resp = '';
+    while (length($resp) < 16) {
+        my $n = recv($sock, my $buf, 16 - length($resp), 0);
+        last unless defined $n && length($buf);
+        $resp .= $buf;
     }
+    return -1 if length($resp) < 16;
+    my @r = unpack('V V V l<', $resp);
+    return $r[3];
+}
+
+sub start_pigpio {
+    log_msg("Connecting to pigpiod at $PIGPIO_HOST:$PIGPIO_PORT");
+    $PIGPIO_CMD = IO::Socket::IP->new(
+        PeerAddr => $PIGPIO_HOST,
+        PeerPort => $PIGPIO_PORT,
+        Proto    => 'tcp',
+        Timeout  => 5,
+    ) or die "Cannot connect to pigpiod command socket: $!";
+    $PIGPIO_NOTIF = IO::Socket::IP->new(
+        PeerAddr => $PIGPIO_HOST,
+        PeerPort => $PIGPIO_PORT,
+        Proto    => 'tcp',
+        Timeout  => 5,
+    ) or die "Cannot connect to pigpiod notify socket: $!";
 
     for my $pin (@BUTTONS) {
-        WiringPi::API::pin_mode($pin, WiringPi::API::INPUT());
-        WiringPi::API::pull_up_down($pin, WiringPi::API::PUD_UP());
-
-        my $cb = sub {
-            my ($edge, $ts) = @_;
-            my $now = Time::HiRes::time();
-            if ($now - ($last_event{$pin} || 0) < 0.05) {
-                return;
-            }
-            $last_event{$pin} = $now;
-            my $label = $PIN_TO_LABEL{$pin};
-            return unless defined $label;
-
-            if ($edge == WiringPi::API::INT_EDGE_FALLING()) {
-                handle_press($pin, $label);
-            } else {
-                handle_release($pin, $label);
-            }
-        };
-
-        WiringPi::API::set_interrupt($pin, WiringPi::API::INT_EDGE_BOTH(), $cb);
+        my $rc1 = pigpio_send($PIGPIO_CMD, PI_CMD_MODES, $pin, PI_INPUT);
+        log_msg("pigpiod set_mode pin $pin INPUT res=$rc1");
+        my $rc2 = pigpio_send($PIGPIO_CMD, PI_CMD_PUD, $pin, PI_PUD_UP);
+        log_msg("pigpiod set_pull_up_down pin $pin UP res=$rc2");
+        $PIGPIO_NOTIFY_MASK |= (1 << $pin);
     }
 
-    my $fd = WiringPi::API::interrupt_fd();
-    if ($fd < 0) {
-        die "No WiringPi interrupt fd available";
+    my $handle = pigpio_send($PIGPIO_NOTIF, PI_CMD_NOIB, 0, 0);
+    log_msg("pigpiod NOIB res=$handle");
+    if ($handle < 0) {
+        die "pigpiod NOIB failed: $handle";
     }
-    open(my $fh, '<&', $fd) or die "Failed to duplicate interrupt fd: $!";
-    $WIRINGPI_FH = $fh;
-    $fh->autoflush(0);
-    return $fh;
+    $PIGPIO_NOTIFY_HANDLE = $handle;
+    log_msg("pigpiod notification handle: $handle");
+
+    my $rc = pigpio_send($PIGPIO_CMD, PI_CMD_NB, $handle, $PIGPIO_NOTIFY_MASK);
+    log_msg("pigpiod notify_begin res=$rc");
+    if ($rc < 0) {
+        die "pigpiod notify_begin failed: $rc";
+    }
+    log_msg("pigpiod notify mask: $PIGPIO_NOTIFY_MASK");
+
+    return $PIGPIO_NOTIF;
+}
+
+sub check_pigpio_events {
+    my ($sel, $timeout) = @_;
+    return unless $PIGPIO_NOTIF;
+    my @ready = $sel->can_read($timeout);
+    return unless @ready;
+    for my $fh (@ready) {
+        next unless $fh == $PIGPIO_NOTIF;
+        my $buf;
+        my $n = sysread($PIGPIO_NOTIF, $buf, 256);
+        return unless defined $n && $n > 0;
+        $PIGPIO_BUFFER .= $buf;
+        while (length($PIGPIO_BUFFER) >= 12) {
+            my $rpt = substr($PIGPIO_BUFFER, 0, 12, '');
+            my ($seqno, $flags, $tick, $level) = unpack('v v V V', $rpt);
+            next if $flags != 0;  # ignore watchdog / alive
+            my $changed = ($level ^ $PIGPIO_LAST_LEVEL) & $PIGPIO_NOTIFY_MASK;
+            $PIGPIO_LAST_LEVEL = $level;
+            for my $pin (@BUTTONS) {
+                my $mask = 1 << $pin;
+                next unless $changed & $mask;
+                my $label = $PIN_TO_LABEL{$pin};
+                next unless defined $label;
+                my $now = Time::HiRes::time();
+                if ($now - ($last_event{$pin} || 0) < 0.05) {
+                    next;
+                }
+                $last_event{$pin} = $now;
+                my $val = ($level & $mask) ? 1 : 0;
+                if ($val == 0) {
+                    handle_press($pin, $label);
+                } else {
+                    handle_release($pin, $label);
+                }
+            }
+        }
+    }
 }
 
 sub get_play_pid {
@@ -537,13 +612,14 @@ sub check_play_pid {
 }
 
 sub cleanup {
-    if ($WIRINGPI_FH) {
-        close($WIRINGPI_FH);
-        $WIRINGPI_FH = 0;
+    if ($PIGPIO_CMD) {
+        close($PIGPIO_CMD) if $PIGPIO_CMD;
     }
-    if ($INC{'WiringPi/API.pm'}) {
-        WiringPi::API::stop_interrupts();
+    if ($PIGPIO_NOTIF) {
+        close($PIGPIO_NOTIF) if $PIGPIO_NOTIF;
     }
+    $PIGPIO_CMD = undef;
+    $PIGPIO_NOTIF = undef;
 }
 
 sub handle_signal {
@@ -560,19 +636,15 @@ $SIG{HUP} = 'IGNORE';
 log_msg("pidap_buttons.pl starting, PID=$$");
 log_msg("Button map: " . join(',', map { "$_." . ($BUTTON_MAP->{$_} || '') } @LABELS));
 
-my $wiringpi_fh = start_wiringpi_interrupts();
-my $sel = IO::Select->new($wiringpi_fh);
+my $pigsock = start_pigpio();
+my $sel = IO::Select->new($pigsock);
 
 init_pidap_pid();
 
 while (1) {
     check_parent();
     check_lock_timeout();
-
-    my @ready = $sel->can_read(0.05);
-    if (@ready) {
-        WiringPi::API::dispatch_interrupts();
-    }
+    check_pigpio_events($sel, 0.05);
 }
 
 exit(0);
