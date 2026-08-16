@@ -1,3 +1,0 @@
-#!/bin/sh
-# Run pidap_display.py from the venv.
-exec /home/rodney/venv/bin/python3 /home/rodney/album_streamer/pidap_display.py "$@"
