@@ -715,6 +715,8 @@ sub play_one_album {
      $do_restart = 1;
      print("DEBUG: previous_track track_idx=$track_idx resume_offset=$resume_offset\n");
      kill(9, -$play_id);
+    } elsif (-e q#pidap.generated.menu#) {
+     kill(9, -$play_id);
     } elsif (-e q#pidap.generated.previous# || -e q#pidap.generated.restart#) {
      kill(9, -$play_id);
     }
@@ -743,6 +745,25 @@ sub play_one_album {
    }
    Time::HiRes::usleep(100_000);
   }
+
+  # Catch a previous_track request that arrived after the play process died,
+  # so pidap_buttons B+X / X+B does not accidentally fall through to next album.
+  if (-e q#pidap.generated.previous_track#) {
+     unlink(q#pidap.generated.previous_track#);
+     my $now = Time::HiRes::time();
+     my $effective_pause = $total_pause_time + ($paused ? ($now - $pause_start) : 0);
+     my $album_time = $play_start_offset + ($now - $start_time - $effective_pause);
+     my $track_idx = 0;
+     for my $i (0 .. $#$offsets) {
+        last if $offsets->[$i] > $album_time;
+        $track_idx = $i;
+     }
+     $resume_offset = 0;
+     $resume_offset = $offsets->[$track_idx - 1] if $track_idx > 0;
+     $resume_album = $play_album;
+     $do_restart = 1;
+  }
+
   &led_off();
  }
  print("DEBUG: before return do_previous=$do_previous do_restart=$do_restart\n");
@@ -767,6 +788,10 @@ sub play_one_album {
    $resume_offset = $do_restart ? $resume_offset : $restart_offset;
   }
   return q#restart#;
+ }
+ if (-e q#pidap.generated.menu#) {
+    unlink(q#pidap.generated.menu#);
+    return q#menu#;
  }
  return q#next#;
 }
@@ -806,6 +831,9 @@ sub play_albums() {
    if ($ii > 0) { $ii--; } else { $ii = $#albums; }
   } elsif ($action eq q#restart#) {
    # stay on same album
+  } elsif ($action eq q#menu#) {
+   &run_menu($albums[$ii]);
+   # stay on same album; run_menu may set resume_album/resume_offset
   } else {
    $ii++;
   }
@@ -939,6 +967,113 @@ sub led_off {
    led_write($led_brightness, 0);
 }
 
+
+#
+# Show a track menu for the current album and let the user scroll/select.
+#
+sub run_menu {
+   my ($play_album) = @_;
+
+   my ($files, $durations, $offsets, $total) = &get_album_offsets($play_album);
+   unless ($files && @$files) {
+      print "Menu: no tracks for $play_album\n";
+      return;
+   }
+
+   my @items = map { my $f = $_; $f =~ s{^.*/}{}; $f; } @$files;
+
+   my $selected = 0;
+   my $did_select = 0;
+   my ($current_album, $current_offset) = &read_current_album;
+   if ($current_album && $current_album eq $play_album && $current_offset > 0) {
+      # keep current_offset so we can resume on exit
+   }
+
+   my $action;
+   my $wait;
+   while (1) {
+      my $title = $play_album;
+      $title =~ s{^.*/}{};
+      &display_menu_list('', \@items, $selected, 8);
+
+      $action = '';
+      $wait = 0;
+      while (!$action && $wait < 100) {
+         if (-r 'pidap.generated.menu_action') {
+            if (open(my $af, '<', 'pidap.generated.menu_action')) {
+               $action = <$af>;
+               chomp $action if defined $action;
+               close($af);
+            }
+            unlink('pidap.generated.menu_action');
+         }
+         $action = '' if defined $action && $action =~ /^\s*$/;
+         last if ($action && $action =~ /^(up|down|select|exit)$/);
+         if (!-e 'pidap.generated.menu_mode') {
+            $action = 'exit';
+            last;
+         }
+         $wait++;
+         Time::HiRes::usleep(100_000);
+      }
+
+      if (!$action || $action eq 'exit') {
+         last;
+      } elsif ($action eq 'up') {
+         $selected-- if $selected > 0;
+      } elsif ($action eq 'down') {
+         $selected++ if $selected < $#items;
+      } elsif ($action eq 'select') {
+         $resume_album = $play_album;
+         $resume_offset = $offsets->[$selected] || 0;
+         $did_select = 1;
+         last;
+      }
+   }
+
+   $resume_album = $play_album;
+   $resume_offset = $did_select ? ($offsets->[$selected] || 0) : ($current_offset || 0);
+
+   &display_menu_list('', [], 0, 10);
+   unlink('pidap.generated.menu_action') if -e 'pidap.generated.menu_action';
+   unlink('pidap.generated.menu_mode') if -e 'pidap.generated.menu_mode';
+}
+
+#
+# Display a scrollable menu list to the TFT console.
+#
+sub display_menu_list {
+   my ($title, $items_ref, $selected, $visible_lines) = @_;
+   $visible_lines ||= 10;
+   $selected = 0 if $selected < 0;
+   $selected = $#$items_ref if $selected > $#$items_ref;
+
+   my $total = scalar(@$items_ref);
+   my $top = 0;
+   if ($total > $visible_lines) {
+      $top = $selected - int($visible_lines / 2);
+      $top = $total - $visible_lines if $top > $total - $visible_lines;
+      $top = 0 if $top < 0;
+   }
+
+   if (open(my $fh, '>', '/dev/tty1')) {
+      print $fh "\e[2J\e[H";  # clear and home
+      print $fh "\e[32m$title\e[0m\n" if $title;
+      my $end = $top + $visible_lines - 1;
+      $end = $#$items_ref if $end > $#$items_ref;
+      for my $i ($top .. $end) {
+         my $item = $items_ref->[$i] // '';
+         if ($i == $selected) {
+            printf $fh "\e[1m>%s\e[0m\n", $item;
+         } else {
+            printf $fh " %s\n", $item;
+         }
+      }
+      close($fh);
+   } else {
+      print "Warning: cannot write to /dev/tty1: $!\n";
+   }
+}
 
 #
 # Randomize array order.

@@ -17,6 +17,7 @@ my $PID_FILE = $ENV{PIDAP_PID_FILE} || ($FindBin::Bin . '/pidap.generated.play_p
 my $VOLUME_CONTROL = $ENV{PIDAP_VOLUME_CONTROL} || 'Amp';
 my $VOLUME_STEP = $ENV{PIDAP_VOLUME_STEP} || 2;
 my $LOCK_HOLD_SEC = $ENV{PIDAP_LOCK_HOLD_SEC} || 5.0;
+my $MENU_HOLD_SEC = $ENV{PIDAP_MENU_HOLD_SEC} || 1.5;
 my $GPIO_CHIP = $ENV{PIDAP_GPIO_CHIP} || '';
 
 my @BUTTONS = (5, 6, 16, 24);
@@ -41,6 +42,8 @@ my %last_fall = ();
 my %last_rise = ();
 my $combo_active_until = 0;
 my $y_pending = 0;
+my $in_menu = 0;
+my $last_menu_action = '';
 my $pidap_pid = 0;
 my $last_play_pid = 0;
 my $album_start = 0;
@@ -530,6 +533,11 @@ sub handle_press {
     my $func = $BUTTON_MAP->{$label};
     log_msg("Button $label pressed, func=$func");
 
+    if ($in_menu) {
+        handle_menu_press($label);
+        return;
+    }
+
     if ($func eq 'lock') {
         if (!$locked && (is_pressed('A') || recently_pressed('A'))) {
             $x_toggled = 1;
@@ -613,6 +621,11 @@ sub handle_release {
 
     my $func = $BUTTON_MAP->{$label};
 
+    if ($in_menu) {
+        handle_menu_release($label);
+        return;
+    }
+
     if ($func eq 'lock') {
         if (!$x_toggled && !$locked) {
             toggle_pause();
@@ -624,7 +637,7 @@ sub handle_release {
 
     if ($func eq 'next_track' && $y_pending) {
         $y_pending = 0;
-        next_track();
+        enter_menu();
         return;
     }
 
@@ -696,6 +709,78 @@ sub cleanup {
     }
     if ($GPIOMON_PID) {
         kill('TERM', $GPIOMON_PID);
+    }
+}
+
+sub get_flag_file {
+    my ($name) = @_;
+    my $ff = $PID_FILE;
+    $ff =~ s{[^/]+$}{};
+    $ff .= '/' if $ff && $ff !~ m{/$};
+    $ff .= $name;
+    return $ff;
+}
+
+sub enter_menu {
+    log_msg('Entering menu mode');
+    $in_menu = 1;
+    $last_menu_action = '';
+    if (open(my $rf, '>', get_flag_file('pidap.generated.menu'))) {
+        print $rf "1\n";
+        close($rf);
+    }
+    if (open(my $mf, '>', get_flag_file('pidap.generated.menu_mode'))) {
+        print $mf "1\n";
+        close($mf);
+    }
+}
+
+sub write_menu_action {
+    my ($action) = @_;
+    my $af = get_flag_file('pidap.generated.menu_action');
+    if (open(my $rf, '>', $af)) {
+        print $rf "$action\n";
+        close($rf);
+    } else {
+        log_msg("Could not write menu action $action: $!");
+    }
+}
+
+sub handle_menu_press {
+    my ($label) = @_;
+    my %action = (A => 'up', B => 'down', X => 'select', Y => 'exit');
+    my $act = $action{$label};
+    return unless $act;
+    log_msg("Menu: $label -> $act");
+    write_menu_action($act);
+    $last_menu_action = $act;
+    # Prevent A/B scroll presses from being interpreted as combo inputs later.
+    if ($act eq 'up' || $act eq 'down') {
+        $pressed{$label} = 0;
+        $press_time{$label} = 0;
+    }
+}
+
+sub handle_menu_release {
+    my ($label) = @_;
+    return unless $in_menu;
+    my $act = $last_menu_action;
+    $last_menu_action = '';
+    $pressed{$label} = 0;
+    $press_time{$label} = 0;
+    if ($act && ($act eq 'exit' || $act eq 'select')) {
+        $in_menu = 0;
+    }
+}
+
+sub check_menu_timeout {
+    return if $in_menu;
+    return unless $y_pending;
+    return unless $pressed{'Y'};
+    my $elapsed = Time::HiRes::time() - $press_time{'Y'};
+    if ($elapsed >= $MENU_HOLD_SEC) {
+        $y_pending = 0;
+        enter_menu();
     }
 }
 
