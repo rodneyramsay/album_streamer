@@ -50,4 +50,36 @@ Use 'export AUDIODEV=hw:\<n\>' to select sound card <n> for sox playback.
 
 Use 'export AUDIODEV=pulse' to select bluetooth speaker on pulse based system
 
+## pidap — Pi Digital Audio Player
+
+`pidap` is an album-centric, random FLAC player for the Raspberry Pi Pirate Audio board. It is split into two programs:
+
+- `pidap_playlist` — runs first at boot to mount USB music partitions and build or preserve `pidap.generated.playlist`.
+- `pidap` — the player. It reads the generated playlist and plays the albums.
+
+The music is expected to be organized as:
+
+    <mount>/<Category>/<Artist>/<Album>/<Track>.flac
+
+The default root is `/usr/local/Music`. USB partitions are mounted under `/media/USB01`, `/media/USB02`, etc. and included when the playlist is built.
+
+Typical flow:
+
+    perl pidap_playlist   # mount USBs, generate playlist if needed
+    perl pidap            # play the generated playlist
+
+`pidap_playlist` exits quickly and prints `USB mounts ready, using existing playlist` when a playlist is already present and no boot button is held, so it can safely run on every boot to keep mounts in place.
+
+Useful environment variables:
+
+- `PIDAP_BUTTON_MAP` — button mapping (default `A:vol_up,B:vol_down,X:lock,Y:next_track`)
+- `PIDAP_VOLUME_CONTROL`, `PIDAP_INITIAL_VOLUME`, `PIDAP_VOLUME_STEP`
+- `PIDAP_LED_PATH`, `PIDAP_LED_TRIGGER`
+
+Hold a button at boot when `pidap_playlist` runs to force different behavior:
+
+- **A** — build a new random playlist
+- **B** — build a new sorted playlist
+- **X** — keep the playlist, reset place/resume
+
 
