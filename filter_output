@@ -12,14 +12,20 @@ while(<>) {
  	if(m/\/([^\/]+)\/([^\/]+)\/([^\/]+)\:\s*$/) {
 	    ($artist, $album, $track) = ($1, $2, $3);
 
-	    $cue = `grep '\/${album}' /usr/local/Music/pidap.generated.playlist`;
+	    $cue = `grep '\/${album}' pidap.generated.playlist`;
 	    if($cue =~ m/\s+(\d+)/) {
 		$cue_num = $1;
 	    }
 
+            $last = `tail -1 pidap.generated.playlist`;
+	    if($last =~ m/\s+(\d+)/) {
+		$last_num = $1;
+	    }
+            
+            
 	    print "\n";
 	    print "$artist\n";
-	    print "${cue_num}: ${album}\n";
+	    print "${cue_num}\/${last_num}: ${album}\n";
 	    print "$track\n";
 	}
     }
