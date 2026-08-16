@@ -40,21 +40,48 @@ These are the default button mappings for `pidap`. The mapping can be overridden
 - When locked, track/album navigation, pause/resume, and combos are ignored.
 - The only way to unlock is another long **X** press (3 seconds).
 
-## Command Line
+## Programs
+
+`pidap` is now split into two parts:
+
+- `pidap_playlist` — runs first to mount USB music partitions and build or preserve `pidap.generated.playlist`.
+- `pidap` — the player. It reads the generated playlist and plays the albums.
+
+### `pidap_playlist`
 
 ```
-pidap [-c <category>] [-a <artist>] [-l <album>] [-m <mount>] [-p] [-q]
+perl pidap_playlist [-c <category>] [-a <artist>] [-l <album>] [-m <mount>] [-q]
 ```
 
 - `-c <category>` – filter by category (Perl regex or simple string)
 - `-a <artist>` – filter by artist
 - `-l <album>` – filter by album
 - `-m <mount>` – music root (default `/usr/local/Music`)
+- `-q` – quiet
+
+It mounts USB partitions under `/media/USB01`, `/media/USB02`, etc. and adds them to the music roots. If `pidap.generated.playlist` already exists and no boot button (A/B/X) is held, it just ensures the mounts are in place and exits, preserving the existing playlist.
+
+Hold a button at boot to force different behavior:
+
+- **A** — build a new random playlist
+- **B** — build a new sorted playlist
+- **X** — keep the playlist, reset the saved place/resume
+
+### `pidap`
+
+```
+perl pidap [-p] [-q]
+```
+
 - `-p` – stop after playing the playlist once
 - `-q` – quiet
 
+`pidap` reads `pidap.generated.playlist` and plays it. It does not mount USBs or generate the playlist.
+
 ## Persistence
 
-- Playlist order is saved in the mount point as `pidap.generated.playlist` and only regenerated if missing.
-- The current album index is saved as `pidap.generated.place` in the mount point.
-- If playback is paused when power is removed, `pidap.generated.resume` lets `pidap` resume from the same track/offset on next boot.
+- `pidap.generated.playlist` — album order, written by `pidap_playlist` and read by `pidap`.
+- `pidap.generated.place` — current album index, managed by `pidap` while playing.
+- `pidap.generated.resume` — paused track/offset, read by `pidap` to resume on the next boot.
+- `pidap.generated.current_album` — track list and offsets for the active album, used by the button handler for track jumps.
+- `pidap.generated.usb_mounts` — list of mounted USB directories, maintained by `pidap_playlist`.
