@@ -10,7 +10,7 @@ RequiresMountsFor=/usr/local/Music
 Type=simple
 WorkingDirectory=/home/rodney/album_streamer
 ExecStart=/usr/bin/perl /home/rodney/album_streamer/pidap
-Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" "PIDAP_PLAY_ONLY=1"
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Restart=always
 RestartSec=5
 User=root

@@ -128,10 +128,10 @@ sub check_gpiomon_events {
             next unless defined $pin && defined $edge;
             next unless exists $PIN_TO_LABEL{$pin};
             my $now = Time::HiRes::time();
-            if ($edge eq 'falling' && $now - ($last_fall{$pin} || 0) < 0.10) {
+            if ($edge eq 'falling' && $now - ($last_fall{$pin} || 0) < 0.05) {
                 next;
             }
-            if ($edge eq 'rising' && $now - ($last_rise{$pin} || 0) < 0.10) {
+            if ($edge eq 'rising' && $now - ($last_rise{$pin} || 0) < 0.05) {
                 next;
             }
             if ($edge eq 'falling') { $last_fall{$pin} = $now; }
@@ -531,7 +531,7 @@ sub handle_press {
     log_msg("Button $label pressed, func=$func");
 
     if ($func eq 'lock') {
-        if (!$locked && recently_pressed('A')) {
+        if (!$locked && (is_pressed('A') || recently_pressed('A'))) {
             $x_toggled = 1;
             $x_armed = 0;
             $y_pending = 0;
@@ -539,7 +539,7 @@ sub handle_press {
             $combo_active_until = Time::HiRes::time() + 0.3;
             return;
         }
-        if (!$locked && recently_pressed('B')) {
+        if (!$locked && (is_pressed('B') || recently_pressed('B'))) {
             $x_toggled = 1;
             $x_armed = 0;
             $y_pending = 0;
@@ -559,10 +559,10 @@ sub handle_press {
     }
 
     if ($func eq 'next_track' || $func eq 'next') {
-        if (recently_pressed('A')) {
+        if (is_pressed('A') || recently_pressed('A')) {
             $y_pending = 0;
             next_album();
-        } elsif (recently_pressed('B')) {
+        } elsif (is_pressed('B') || recently_pressed('B')) {
             $y_pending = 0;
             previous_or_restart();
         } elsif ($func eq 'next_track') {
@@ -576,7 +576,7 @@ sub handle_press {
     }
 
     if ($func eq 'vol_up' || $func eq 'vol_down') {
-        if (!$locked && recently_pressed('X')) {
+        if (!$locked && (is_pressed('X') || recently_pressed('X'))) {
             $x_toggled = 1;
             $x_armed = 0;
             $y_pending = 0;

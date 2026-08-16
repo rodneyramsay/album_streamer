@@ -44,9 +44,9 @@ if(defined($opt_h)) {
 }
 
 if(defined($opt_m)) {
-   $mount = $opt_m;
+   @mounts = ($opt_m);
 } else {
-   $mount = "/usr/local/Music";
+   @mounts = ("/usr/local/Music");
 }
 
 $playlist_file = "$FindBin::Bin/pidap.generated.playlist";
@@ -64,8 +64,8 @@ $ENV{PIDAP_VOLUME_CONTROL} = $ENV{PIDAP_VOLUME_CONTROL} || "Amp";
 $ENV{PIDAP_VOLUME_STEP} = $ENV{PIDAP_VOLUME_STEP} || "2";
 $ENV{PIDAP_INITIAL_VOLUME} = $ENV{PIDAP_INITIAL_VOLUME} || "40";
 
-my $build_only = $ENV{PIDAP_BUILD_PLAYLIST} ? 1 : (defined($opt_B) ? 1 : 0);
-my $play_only  = $ENV{PIDAP_PLAY_ONLY} ? 1 : (defined($opt_P) ? 1 : 0);
+my $build_only = 0;
+my $play_only  = 1;
 
 #
 # LED control. Default to the Pi's on-board ACT/led0 LED.
@@ -117,212 +117,19 @@ my $resume_offset = 0;
 #   Music/<Category>/<Artist>/<Album>/<Track>.flac
 #
 my $boot_applied = 0;
+my $sorted_playlist = 0;
+
 
 while($run) {
 
-   if ($build_only) {
-      my @usb_mounts = &mount_usb_devices();
-      &link_usb_mounts(@usb_mounts);
-   }
-
-   print
-("Building Album List");
-
-   #
-   # Check category directories
-   #
-   foreach $category (`ls $mount/`) {
-      chomp($category);
-      next unless -d "$mount/$category";
-
-      #
-      # List of all categories for manipulating play list later.
-      #
-      push(@categories, $category);
-
-      #
-      # List of categories to play now.
-      #
-      if(!defined($opt_c) || ($category =~ m/$opt_c/)) {
-	 $play_categories{$category} = $category;
-	 push(@play_categories, $category);
-      }
-
-
-      #
-      # Check artist directories
-      #
-      foreach $artist (`ls $mount/$category/`) {
-	 chomp($artist);
-	 next unless -d "$mount/$category/$artist";
-
-	 #
-	 # List of all artists
-	 #
-	 push(@artists, $artist);
-
-	 #
-	 # If -a option only want to play artists matching name..
-	 # List of artists to play now.
-	 #
-	 if(defined($play_categories{$category}) &&
-	     (!defined($opt_a) || ($artist =~ m/$opt_a/))) {
-
-	    $play_artists{$artist} = $artist;
-	    push(@play_artists, $artist);
-	 }
-
-
-	 #
-	 # Check album directories
-	 #
-	 foreach $album (`ls $mount/$category/$artist | sort`) {
-	    print(".");
-
-	    chomp($album);
-
-	    #
-	    # For multi-disk albums, only remember disc 1.
-	    # Play multi-disk albums all together later...
-	    #
-	    if($album =~ m/dis[ck]_?(\d+)/i) {
-	       $disk_num = $1;
-	       next unless($disk_num =~ m/0*1/);
-	    }
-
-	    #
-	    # All Album names
-	    #
-	    push(@album_names, $album);
-
-	    $album_path = "${mount}/${category}/${artist}/${album}";
-    next unless -d $album_path;
-
-	    #
-	    # Build lists of albums.
-	    #
-	    push(@{$albums{$category}}, $album_path);
-	    push(@{$albums{$artist}}, $album_path);
-
-	    #
-	    # List of album full paths.
-	    #
-	    push(@albums, $album_path);
-
-	    #	    $last_track = `ls $album_path | tail -1`;
-	    #	    $last_track{$album_path} = "${mount}/${category}/${artist}/${album}/${last_track}";
-
-	    #
-	    # -l option only play matching albums.
-	    #
-	    if(defined($play_categories{$category}) && defined($play_artists{$artist})) {
-	       if(!defined($opt_l) || ($album =~ m/$opt_l/)) {
-		  my $play_path = "${mount}/${category}/${artist}/${album}";
-	  my @tracks = glob("${play_path}*/*.flac");
-	  next unless @tracks;
-	  push(@play_albums, $play_path);
-	       }
-	    }
-	 }
-      }
-   }
-
-   #
-   # Start streaming albums
-   #
    print("\n\n======================== PIDAP! ================================\n\n");
 
-   #
-   # Use a saved playlist if it exists and no filters are in effect.
-   # Filters change the album set, so we always build fresh for those.
-   #
-   my $using_filters = (defined($opt_c) || defined($opt_a) || defined($opt_l));
-   my $loaded_playlist = 0;
-   my @disk_albums = @play_albums;
-
-   if (!$using_filters && -r $playlist_file) {
-      my @saved = &read_playlist_file($playlist_file);
-      if (@saved) {
-         my %disk = map { $_ => 1 } @disk_albums;
-         my @valid = grep { -d $_ && $disk{$_} } @saved;
-         if (@valid) {
-            @play_albums = @valid;
-            $loaded_playlist = 1;
-            print("Using saved playlist order\n");
-         } else {
-            print("Warning: saved playlist is out of date, rebuilding\n");
-            unlink($playlist_file) if -e $playlist_file;
-         }
-      }
+   @play_albums = &read_playlist_file($playlist_file);
+   unless (@play_albums) {
+      print "No playlist file ($playlist_file) available, cannot play\n";
+      exit(1);
    }
 
-   #
-   # No saved playlist: build a fresh one, shuffle or sort it, and save it.
-   # In play-only mode, do not generate the playlist here; that is the
-   # playlist generator's job.
-   #
-   unless ($loaded_playlist) {
-      if ($play_only) {
-         print "No playlist file ($playlist_file) available, cannot play\n";
-         exit(1);
-      }
-
-      if ($sorted_playlist) {
-         @play_albums = sort @play_albums;
-      } else {
-         @play_albums = &rand_array(@play_albums);
-      }
-
-      if (!$using_filters) {
-         if (open(my $cf, '>', $playlist_file)) {
-            foreach $jj (0 .. $#play_albums) {
-               printf($cf "CUESHEET:%7d %s\n", $jj, $play_albums[$jj]);
-            }
-            close($cf);
-         } else {
-            print "Warning: could not write $playlist_file: $!\n";
-         }
-         unlink($place_file) if -e $place_file;
-      }
-   }
-
-   my $sorted_playlist = 0;
-
-   #
-   # Boot-time button actions.
-   #
-   if ($boot_mode && !$boot_applied) {
-      $boot_applied = 1;
-      if ($boot_mode eq 'A') {
-         print "Boot: hold A - regenerate random playlist\n";
-         unlink($playlist_file) if -e $playlist_file;
-         unlink($place_file) if -e $place_file;
-         unlink($resume_file) if -e $resume_file;
-         $resume_album = '';
-         $resume_offset = 0;
-         $first_lp = 0;
-      } elsif ($boot_mode eq 'B') {
-         print "Boot: hold B - sorted playlist\n";
-         $sorted_playlist = 1;
-         unlink($playlist_file) if -e $playlist_file;
-         unlink($place_file) if -e $place_file;
-         unlink($resume_file) if -e $resume_file;
-         $resume_album = '';
-         $resume_offset = 0;
-         $first_lp = 0;
-      } elsif ($boot_mode eq 'X') {
-         print "Boot: hold X - start from first track\n";
-         unlink($place_file) if -e $place_file;
-         unlink($resume_file) if -e $resume_file;
-         $resume_album = '';
-         $resume_offset = 0;
-         $first_lp = 0;
-      }
-   }
-
-   #
-   # Restore resume position if paused before shutdown.
-   #
    ($resume_album, $resume_offset) = &read_resume;
    if ($resume_album) {
       my $found = 0;
@@ -339,44 +146,26 @@ while($run) {
          $resume_offset = 0;
          unlink($resume_file) if -e $resume_file;
       }
-   }
-
-   #
-   # Otherwise, restore our place in the playlist.
-   #
-   unless ($resume_album) {
+   } else {
       my $place = &read_place_file($place_file);
       if ($place > 0 && $place <= $#play_albums) {
          $first_lp = $place;
          print("Resuming playlist at index $first_lp: $play_albums[$first_lp]\n");
       } elsif ($place > $#play_albums && $place > 0) {
-         print("Playlist was finished; starting over\n");
+         print "Playlist was finished; starting over\n";
          unlink($place_file) if -e $place_file;
          $first_lp = 0;
       }
    }
 
-   #
-   # Print out cuesheet unless quiet mode.
-   #
    unless(defined($opt_q)) {
       foreach $jj (0 .. $#play_albums) {
          printf("CUESHEET:%7d %s\n", $jj, $play_albums[$jj]);
       }
    }
 
-   if ($build_only) {
-      print "Playlist built ($#play_albums albums), exiting build-only mode\n";
-      exit(0);
-   }
-
    &play_albums(@play_albums);
 
-   #
-   # Loop back to the beginning when the playlist finishes.
-   # If we were interrupted, the place file still exists and we
-   # resume from there. Use -p to stop after one pass.
-   #
    last if(defined($opt_p));
    if (-e $place_file) {
       next;
@@ -384,6 +173,7 @@ while($run) {
    $first_lp = 0;
    next;
 }
+
 
 
 #
@@ -470,9 +260,28 @@ sub read_boot_gpio() {
 sub find_usb_partitions {
 
    my @found = ();
-   my $lsblk = `lsblk -P -o PATH,TYPE,TRAN,FSTYPE,MOUNTPOINT 2>/dev/null`;
-   return @found unless defined $lsblk && $lsblk =~ /\S/;
+   my $lsblk = `lsblk -P -o PATH,PKNAME,TYPE,TRAN,FSTYPE,MOUNTPOINT,RM,HOTPLUG,MODEL 2>/dev/null`;
+   unless (defined $lsblk && $lsblk =~ /\S/) {
+      print "find_usb_partitions: lsblk produced no output\n";
+      return @found;
+   }
+   print "find_usb_partitions: lsblk output:\n$lsblk\n";
 
+   # First pass: build a map of parent disk attributes (RM/HOTPLUG/TRAN).
+   my %parent = ();
+   for my $line (split /\n/, $lsblk) {
+      next unless $line =~ /\S/;
+      my %f = ();
+      while ($line =~ /(\w+)="([^"]*)"/g) {
+         $f{$1} = $2;
+      }
+      next unless $f{TYPE} && $f{TYPE} eq 'disk';
+      my $name = $f{PATH};
+      $name =~ s#^.*/##;
+      $parent{$name} = \%f;
+   }
+
+   # Second pass: find candidate partitions.
    for my $line (split /\n/, $lsblk) {
       next unless $line =~ /\S/;
       my %f = ();
@@ -480,10 +289,36 @@ sub find_usb_partitions {
          $f{$1} = $2;
       }
       next unless $f{TYPE} && $f{TYPE} eq 'part';
-      next unless $f{FSTYPE} && $f{FSTYPE} =~ /^(vfat|exfat|ntfs|ext4|btrfs|auto|xfs)/i;
-      next if $f{MOUNTPOINT} && $f{MOUNTPOINT} =~ /\S/;
-      next unless ($f{TRAN} && $f{TRAN} eq 'usb') || ($f{RM} && $f{RM} eq '1');
-      push @found, $f{PATH};
+
+      # Accept an already-mounted USB if it lives under /media/USBxx.
+      # Otherwise only consider partitions that are not mounted.
+      my $already_mounted = ($f{MOUNTPOINT} && $f{MOUNTPOINT} =~ m#^/media/USB\d+$#);
+      next if $f{MOUNTPOINT} && $f{MOUNTPOINT} =~ /\S/ && !$already_mounted;
+
+      # Inherit removable/USB flags from the parent disk if the partition
+      # itself doesn't have them.
+      my $p = ($f{PKNAME} && exists $parent{$f{PKNAME}}) ? $parent{$f{PKNAME}} : \%f;
+      my $is_removable = ($p->{RM} && $p->{RM} eq '1') || ($p->{HOTPLUG} && $p->{HOTPLUG} eq '1');
+      my $is_usb = $p->{TRAN} && $p->{TRAN} =~ /^(usb|sata|ata)$/i;
+      my $why = $is_removable ? 'removable' : ($is_usb ? 'usb/sata' : 'no');
+      print "find_usb_partitions: $f{PATH} hotplug=$why\n";
+      next unless $is_removable || $is_usb;
+
+      my $fs = $f{FSTYPE};
+      unless ($fs && $fs =~ /^(vfat|exfat|ntfs|ext4|btrfs|xfs|auto)/i) {
+         $fs = `blkid -s TYPE -o value "$f{PATH}" 2>/dev/null`;
+         chomp($fs) if $fs;
+      }
+      unless ($fs && $fs =~ /^(vfat|exfat|ntfs|ext4|btrfs|xfs)/i) {
+         print "find_usb_partitions: $f{PATH} unsupported or unknown fs '$fs', skipping\n";
+         next;
+      }
+
+      # Return the existing mount point if it's already in /media, else the
+      # device path so we can mount it ourselves.
+      my $root = $already_mounted ? $f{MOUNTPOINT} : $f{PATH};
+      print "find_usb_partitions: $f{PATH} looks good (fs=$fs, using $root)\n";
+      push @found, $root;
    }
 
    return @found;
@@ -497,26 +332,51 @@ sub mount_usb_devices {
 
    `mkdir -p /media` unless -d '/media';
 
+   # Remove leftover empty USB mount directories from previous runs so we
+   # don't accumulate /media/USB01, /media/USB02, ... every time the
+   # playlist generator runs.
+   for my $old (glob '/media/USB*') {
+      next unless -d $old;
+      # /proc/mounts lists all active mounts; this works even if mountpoint(1)
+      # is not installed.
+      my $in_mtab = `grep -F " $old " /proc/mounts 2>/dev/null`;
+      next if $in_mtab =~ /\S/;
+      if (rmdir($old)) {
+         print "Removed stale mount dir $old\n";
+      } else {
+         print "Warning: could not rmdir $old: $!\n";
+      }
+   }
+
    my $n = 1;
    for my $part (@parts) {
-      my $dir = sprintf('/media/USB%02d', $n++);
-      `mkdir -p "$dir"`;
-
-      my $rc = system('mount', $part, $dir);
-      if ($rc != 0) {
-         my $fs = `blkid -s TYPE -o value "$part" 2>/dev/null`;
-         chomp($fs) if $fs;
-         $fs = 'auto' unless $fs;
-         $rc = system('mount', '-t', $fs, $part, $dir);
-      }
-
-      if ($rc == 0) {
-         push @usb_mounts, $dir;
-         print "Mounted USB partition $part on $dir\n";
+      my $dir;
+      if ($part =~ m#^/media/USB\d+$# && -d $part) {
+         # Already mounted from a previous run (or manually).
+         $dir = $part;
+         print "Using existing USB mount $dir\n";
       } else {
-         print "Warning: failed to mount $part\n";
-         rmdir($dir) if -d $dir;
+         do {
+            $dir = sprintf('/media/USB%02d', $n++);
+         } while (-d $dir);
+         `mkdir -p "$dir"`;
+
+         my $rc = system('mount', $part, $dir);
+         if ($rc != 0) {
+            my $fs = `blkid -s TYPE -o value "$part" 2>/dev/null`;
+            chomp($fs) if $fs;
+            $fs = 'auto' unless $fs;
+            $rc = system('mount', '-t', $fs, $part, $dir);
+         }
+
+         if ($rc != 0) {
+            print "Warning: failed to mount $part\n";
+            rmdir($dir) if -d $dir;
+            next;
+         }
+         print "Mounted USB partition $part on $dir\n";
       }
+      push @usb_mounts, $dir;
    }
 
    my $mfile = "$FindBin::Bin/pidap.generated.usb_mounts";
@@ -532,27 +392,21 @@ sub mount_usb_devices {
    return @usb_mounts;
 }
 
-sub link_usb_mounts {
+sub add_usb_music_roots {
 
    my (@usb_dirs) = @_;
 
-   # Clean up stale USB symlinks under the main music mount.
-   if (-d $mount) {
-      for my $old (glob "$mount/USB*") {
-         unlink($old) if -l $old;
-      }
-   }
-
-   # Create new symlinks so pidap's normal scanner picks them up.
-   my $n = 1;
+   # Add each mounted USB's music tree as an extra root. If the USB has a
+   # top-level Music directory, use it; otherwise use the mount point itself.
    for my $dir (@usb_dirs) {
-      my $name = sprintf('USB%02d', $n++);
-      my $link = "$mount/$name";
-      if (symlink($dir, $link)) {
-         print "Linked $dir as $link\n";
-      } else {
-         print "Warning: failed to symlink $dir to $link: $!\n";
+      my $root = $dir;
+      my $music_root = "$dir/Music";
+      if (-d $music_root) {
+         $root = $music_root;
+         print "Using $music_root as music root for $dir\n";
       }
+      push @mounts, $root;
+      print "Added music root: $root\n";
    }
 }
 
@@ -753,10 +607,6 @@ sub find_play_child {
 
 sub play_one_album {
  my ($play_album, $volume_initialized_ref, $album_offsets_cache_ref) = @_;
- if ($play_album =~ m/(dis(c|k)_?(\d+))/i) {
-  my ($disc_name, $disc_num) = ($1, $3);
-  $play_album =~ s/$disc_num//;
- }
  unlink(q#pidap.generated.restart#) if -e q#pidap.generated.restart#;
  my ($files, $durations, $offsets, $total);
  if (exists $album_offsets_cache_ref->{$play_album}) {
@@ -781,7 +631,8 @@ sub play_one_album {
   unlink($resume_file) if -e $resume_file;
  } else {
   &write_current_album($play_album, 0, $files, $durations);
-  $play_id = &print_run(qq#play ${play_album}*/*.flac#);
+  my $cmd = &build_resume_cmd($play_album, 0, $files, $durations);
+  $play_id = &print_run($cmd) if $cmd;
  }
  &led_off();
  &write_play_pid($play_id);
