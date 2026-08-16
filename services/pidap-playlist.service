@@ -1,0 +1,17 @@
+
+[Unit]
+Description=PIDAP playlist generator
+Before=pidap-play.service
+RequiresMountsFor=/usr/local/Music
+After=local-fs.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/rodney/album_streamer
+ExecStart=/usr/bin/perl /home/rodney/album_streamer/pidap_playlist
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+RemainAfterExit=yes
+User=root
+
+[Install]
+WantedBy=multi-user.target
