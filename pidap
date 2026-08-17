@@ -6,6 +6,10 @@ use Getopt::Std;
 use FindBin;
 use Time::HiRes;
 
+my $MENU_COLUMNS = 24;
+my $MENU_ITEM_MAX  = $MENU_COLUMNS - 1;
+my $HSCROLL_INTERVAL = 0.35;
+
 #
 # Button handler asks pidap to skip to the next track via SIGUSR1,
 # or asks for previous/restart via SIGUSR2 (B+Y).
@@ -1096,6 +1100,11 @@ sub run_menu {
    my $title = '';
    my $did_select = 0;
 
+   my $hscroll_offset = 0;
+   my $hscroll_dir = 1;
+   my $hscroll_selected = -1;
+   my $hscroll_last = 0;
+
    my $action;
    my $wait;
    while (1) {
@@ -1128,7 +1137,19 @@ sub run_menu {
          $title =~ s{^.*/}{};
       }
 
-      &display_menu_list($title, \@items, $selected, 13);
+      if ($selected != $hscroll_selected) {
+         $hscroll_offset = 0;
+         $hscroll_dir = 1;
+         $hscroll_selected = $selected;
+         $hscroll_last = Time::HiRes::time();
+      }
+      my @display_items = @items;
+      if (length($items[$selected]) > $MENU_ITEM_MAX) {
+         my $max_offset = length($items[$selected]) - $MENU_ITEM_MAX;
+         $hscroll_offset = $max_offset if $hscroll_offset > $max_offset;
+         $display_items[$selected] = substr($items[$selected], $hscroll_offset, $MENU_ITEM_MAX);
+      }
+      &display_menu_list($title, \@display_items, $selected, 13);
 
       $action = '';
       $wait = 0;
@@ -1146,6 +1167,25 @@ sub run_menu {
          if (!-e 'pidap.generated.menu_mode') {
             $action = '';
             last;
+         }
+         my $now = Time::HiRes::time();
+         if ($now - $hscroll_last >= $HSCROLL_INTERVAL) {
+            my $item_len = length($items[$selected]);
+            if ($item_len > $MENU_ITEM_MAX) {
+               my $max_offset = $item_len - $MENU_ITEM_MAX;
+               $hscroll_offset += $hscroll_dir;
+               if ($hscroll_offset >= $max_offset) {
+                  $hscroll_offset = $max_offset;
+                  $hscroll_dir = -1;
+               } elsif ($hscroll_offset <= 0) {
+                  $hscroll_offset = 0;
+                  $hscroll_dir = 1;
+               }
+               @display_items = @items;
+               $display_items[$selected] = substr($items[$selected], $hscroll_offset, $MENU_ITEM_MAX);
+               &display_menu_list($title, \@display_items, $selected, 13, 0);
+            }
+            $hscroll_last = $now;
          }
          $wait++;
          Time::HiRes::usleep(100_000);
@@ -1229,7 +1269,8 @@ sub run_menu {
 # Display a scrollable menu list to the TFT console.
 #
 sub display_menu_list {
-   my ($title, $items_ref, $selected, $visible_lines) = @_;
+   my ($title, $items_ref, $selected, $visible_lines, $full) = @_;
+   $full = 1 unless defined $full;
    $visible_lines ||= 10;
    $selected = 0 if $selected < 0;
    $selected = $#$items_ref if $selected > $#$items_ref;
@@ -1250,30 +1291,39 @@ sub display_menu_list {
       $top = $total - $item_lines if $top > $total - $item_lines;
    }
 
-   my $max_columns = 24;
-   my $title_max = $max_columns;
-   my $item_max = $max_columns - 1;
+   my $title_max = $MENU_COLUMNS;
+   my $item_max = $MENU_ITEM_MAX;
 
    if (open(my $fh, '>', '/dev/tty1')) {
-      # Only fully clear for the blank-out call; otherwise home and overwrite.
-      if (!$title && $total == 0) {
-         print $fh "\e[2J\e[H";
-      } else {
-         print $fh "\e[H";
-      }
-      if ($title) {
-         my $t = (length($title) > $title_max) ? substr($title, 0, $title_max) : $title;
-         printf $fh "\e[32m%-*s\e[0m\n", $title_max, $t;
-      }
-      my $end = $top + $item_lines - 1;
-      for my $i ($top .. $end) {
-         my $item = ($i <= $#$items_ref) ? $items_ref->[$i] : '';
-         $item = substr($item, 0, $item_max) if length($item) > $item_max;
-         if ($i == $selected) {
-            printf $fh "\e[1m>%-*s\e[0m\n", $item_max, $item;
+      if ($full) {
+         # Only fully clear for the blank-out call; otherwise home and overwrite.
+         if (!$title && $total == 0) {
+            print $fh "\e[2J\e[H";
          } else {
-            printf $fh " %-*s\n", $item_max, $item;
+            print $fh "\e[H";
          }
+         if ($title) {
+            my $t = (length($title) > $title_max) ? substr($title, 0, $title_max) : $title;
+            printf $fh "\e[32m%-*s\e[0m\n", $title_max, $t;
+         }
+         my $end = $top + $item_lines - 1;
+         for my $i ($top .. $end) {
+            my $item = ($i <= $#$items_ref) ? $items_ref->[$i] : '';
+            $item = substr($item, 0, $item_max) if length($item) > $item_max;
+            my $nl = ($i == $end) ? '' : "\n";
+            if ($i == $selected) {
+               printf $fh "\e[1m>%-*s\e[0m$nl", $item_max, $item;
+            } else {
+               printf $fh " %-*s$nl", $item_max, $item;
+            }
+         }
+      } else {
+         # Update only the selected line to avoid full-screen flicker.
+         my $row = ($selected - $top) + ($title ? 2 : 1);
+         my $item = $items_ref->[$selected] // '';
+         $item = substr($item, 0, $item_max) if length($item) > $item_max;
+         print $fh "\e[$row;1H";
+         printf $fh "\e[1m>%-*s\e[0m", $item_max, $item;
       }
       close($fh);
    } else {
