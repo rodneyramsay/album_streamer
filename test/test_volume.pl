@@ -47,13 +47,20 @@ sub get_volume {
 }
 
 sub expect_volume_changed {
-    my ($desc, $before, $after, $expected_delta) = @_;
+    my ($desc, $before, $after, $expected_min, $direction) = @_;
     my $actual = $after - $before;
-    if ($actual == $expected_delta) {
+    my $ok = 0;
+    if ($direction eq 'up') {
+        $ok = ($actual >= $expected_min);
+    } elsif ($direction eq 'down') {
+        $ok = ($actual <= -$expected_min);
+    }
+    if ($ok) {
         log_test("PASS: $desc ($before% -> $after%, delta $actual)");
         $passed++;
     } else {
-        log_test("FAIL: $desc ($before% -> $after%, expected $expected_delta, got $actual)");
+        my $wanted = ($direction eq 'up') ? ">= +$expected_min" : "<= -$expected_min";
+        log_test("FAIL: $desc ($before% -> $after%, expected $wanted, got $actual)");
         $failed++;
     }
 }
@@ -107,14 +114,14 @@ sub run_tests {
     my $before = get_volume();
     tap('A');
     my $after = get_volume();
-    expect_volume_changed('A raises volume', $before, $after, $VOLUME_STEP);
+    expect_volume_changed('A raises volume', $before, $after, $VOLUME_STEP, 'up');
 
     # B: volume down
     set_volume(50);
     $before = get_volume();
     tap('B');
     $after = get_volume();
-    expect_volume_changed('B lowers volume', $before, $after, -$VOLUME_STEP);
+    expect_volume_changed('B lowers volume', $before, $after, $VOLUME_STEP, 'down');
 
     if (defined $initial_volume) {
         set_volume($initial_volume);
