@@ -1128,7 +1128,7 @@ sub run_menu {
          $title =~ s{^.*/}{};
       }
 
-      &display_menu_list($title, \@items, $selected, 12);
+      &display_menu_list($title, \@items, $selected, 13);
 
       $action = '';
       $wait = 0;
@@ -1144,14 +1144,16 @@ sub run_menu {
          $action = '' if defined $action && $action =~ /^\s*$/;
          last if ($action && $action =~ /^(up|down|select|back)$/);
          if (!-e 'pidap.generated.menu_mode') {
-            $action = 'back';
+            $action = '';
             last;
          }
          $wait++;
          Time::HiRes::usleep(100_000);
       }
 
-      if (!$action || $action eq 'back') {
+      if (!$action) {
+         last;
+      } elsif ($action eq 'back') {
          if ($level > 0) {
             $level--;
             if ($level == 2) {
@@ -1202,8 +1204,8 @@ sub run_menu {
       $resume_album = $albums[$album_idx];
       $resume_offset = $track_offsets->[$selected] || 0;
    } else {
-      $resume_album = $albums[$current_album_idx];
-      $resume_offset = $current_offset || 0;
+      $resume_album = q{};
+      $resume_offset = 0;
    }
 
    &display_menu_list('', [], 0, 10);
@@ -1248,17 +1250,29 @@ sub display_menu_list {
       $top = $total - $item_lines if $top > $total - $item_lines;
    }
 
+   my $max_columns = 24;
+   my $title_max = $max_columns;
+   my $item_max = $max_columns - 1;
+
    if (open(my $fh, '>', '/dev/tty1')) {
-      print $fh "\e[2J\e[H";  # clear and home
-      print $fh "\e[32m$title\e[0m\n" if $title;
+      # Only fully clear for the blank-out call; otherwise home and overwrite.
+      if (!$title && $total == 0) {
+         print $fh "\e[2J\e[H";
+      } else {
+         print $fh "\e[H";
+      }
+      if ($title) {
+         my $t = (length($title) > $title_max) ? substr($title, 0, $title_max) : $title;
+         printf $fh "\e[32m%-*s\e[0m\n", $title_max, $t;
+      }
       my $end = $top + $item_lines - 1;
-      $end = $#$items_ref if $end > $#$items_ref;
       for my $i ($top .. $end) {
-         my $item = $items_ref->[$i] // '';
+         my $item = ($i <= $#$items_ref) ? $items_ref->[$i] : '';
+         $item = substr($item, 0, $item_max) if length($item) > $item_max;
          if ($i == $selected) {
-            printf $fh "\e[1m>%s\e[0m\n", $item;
+            printf $fh "\e[1m>%-*s\e[0m\n", $item_max, $item;
          } else {
-            printf $fh " %s\n", $item;
+            printf $fh " %-*s\n", $item_max, $item;
          }
       }
       close($fh);

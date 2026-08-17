@@ -44,6 +44,9 @@ my $combo_active_until = 0;
 my $y_pending = 0;
 my $in_menu = 0;
 my $last_menu_action = '';
+my $last_menu_repeat = 0;
+my $MENU_REPEAT_INITIAL = 0.4;
+my $MENU_REPEAT_INTERVAL = 0.2;
 my $pidap_pid = 0;
 my $last_play_pid = 0;
 my $album_start = 0;
@@ -756,11 +759,7 @@ sub handle_menu_press {
     log_msg("Menu: $label -> $act");
     write_menu_action($act);
     $last_menu_action = $act;
-    # Prevent A/B scroll presses from being interpreted as combo inputs later.
-    if ($act eq 'up' || $act eq 'down') {
-        $pressed{$label} = 0;
-        $press_time{$label} = 0;
-    }
+    $last_menu_repeat = Time::HiRes::time() + $MENU_REPEAT_INITIAL;
 }
 
 sub handle_menu_release {
@@ -788,6 +787,19 @@ sub check_menu_state {
     if (!-e $mf) {
         $in_menu = 0;
         $last_menu_action = '';
+        $last_menu_repeat = 0;
+    }
+}
+
+sub check_menu_repeat {
+    return unless $in_menu;
+    return unless $last_menu_action =~ /^(up|down)$/;
+    my $label = ($last_menu_action eq 'up') ? 'A' : 'B';
+    return unless $pressed{$label};
+    my $now = Time::HiRes::time();
+    if ($now >= $last_menu_repeat) {
+        write_menu_action($last_menu_action);
+        $last_menu_repeat = $now + $MENU_REPEAT_INTERVAL;
     }
 }
 
@@ -815,6 +827,7 @@ while (1) {
     check_parent();
     check_lock_timeout();
     check_menu_state();
+    check_menu_repeat();
     check_gpiomon_events($sel, 0.05);
     check_backlight_timeout();
 }
