@@ -6,35 +6,41 @@ These are the default button mappings for `pidap`. The mapping can be overridden
 
 | Button | Short press | Long press (>= 3 s) |
 |--------|-------------|---------------------|
-| **A**  | Volume up   | –                   |
-| **B**  | Volume down | –                   |
+| **A**  | Volume up   | --                   |
+| **B**  | Volume down | --                   |
 | **X**  | Pause / Resume playback | Toggle lock / unlock |
-| **Y**  | Enter menu  | –                   |
+| **Y**  | Enter menu  | --                   |
 
 ## Combos
 
 | Combo | Action | Notes |
 |-------|--------|-------|
-| **A + Y** | Next album | – |
-| **A + X** | Next track | – |
+| **A + Y** | Next album | -- |
+| **A + X** | Next track | -- |
 | **B + Y** | Restart current album | If you are on the first track and within the first 15 seconds, it jumps to the previous album instead. |
-| **B + X** | Previous track | – |
+| **B + X** | Previous track | -- |
 | **A + B** | Restart current track | If you are within the first 15 seconds of the track, it jumps to the previous track instead. If you are on the first track and within the first 15 seconds, it jumps to the previous album. |
 
 ## Menu Mode
 
-Press **Y** to enter the menu. The menu starts at the **track** level of the album that is currently playing.
+Press **Y** to enter the menu. The menu starts at the **track** level of the currently playing album.
 
 | Button | Action in menu |
 |--------|----------------|
 | **A**  | Move cursor up |
 | **B**  | Move cursor down |
-| **X**  | Select the highlighted track and start playback from it |
-| **Y**  | Exit the menu and resume playback |
+| **X**  | Select / drill down one level |
+| **Y**  | Go back one level |
 
-- The menu shows the tracks in the current album.
-- The currently playing track is pre-selected.
-- Selecting a track with **X** starts playback from that track and continues through the rest of the album.
+- The menu opens on the track list for the currently playing album.
+- At the track list, press **X** to start playback from the selected track.
+- Press **Y** from the track list to return to the album list.
+- At the album list, press **X** to show the tracks for the selected album.
+- Press **Y** from the album list to return to the artist list.
+- At the artist list, press **X** to show the albums for the selected artist.
+- Press **Y** from the artist list to return to the genre list.
+- At the genre list, press **X** to show the artists for the selected genre.
+- Press **Y** from the genre list to exit the menu and resume playback.
 
 ## Status LED
 
@@ -56,4 +62,3 @@ Press **Y** to enter the menu. The menu starts at the **track** level of the alb
 - When locked, the volume buttons (**A** and **B**) still work.
 - When locked, track/album navigation, pause/resume, and combos are ignored.
 - The only way to unlock is another long **X** press (3 seconds).
-
