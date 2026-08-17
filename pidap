@@ -606,7 +606,8 @@ sub find_play_child {
 }
 
 sub play_one_album {
- my ($play_album, $volume_initialized_ref, $album_offsets_cache_ref) = @_;
+ my ($play_album, $current_ii, $albums_ref, $volume_initialized_ref, $album_offsets_cache_ref) = @_;
+ my @albums = @$albums_ref;
  unlink(q#pidap.generated.restart#) if -e q#pidap.generated.restart#;
  my ($files, $durations, $offsets, $total);
  if (exists $album_offsets_cache_ref->{$play_album}) {
@@ -626,14 +627,14 @@ sub play_one_album {
    $play_id = &print_run($resume_cmd);
    $first_lp = 0;
   }
-  $resume_album = q{};
-  $resume_offset = 0;
-  unlink($resume_file) if -e $resume_file;
  } else {
   &write_current_album($play_album, 0, $files, $durations);
   my $cmd = &build_resume_cmd($play_album, 0, $files, $durations);
   $play_id = &print_run($cmd) if $cmd;
  }
+ $resume_album = q{};
+ $resume_offset = 0;
+ unlink($resume_file) if -e $resume_file;
  &led_off();
  &write_play_pid($play_id);
  if (!$$volume_initialized_ref) {
@@ -716,7 +717,19 @@ sub play_one_album {
      print("DEBUG: previous_track track_idx=$track_idx resume_offset=$resume_offset\n");
      kill(9, -$play_id);
     } elsif (-e q#pidap.generated.menu#) {
-     kill(9, -$play_id);
+     unlink(q#pidap.generated.menu#);
+     # Find the currently playing track start so we know if the user picked something different.
+     my $track_idx = 0;
+     for my $i (0 .. $#$offsets) {
+        last if $offsets->[$i] > $album_time;
+        $track_idx = $i;
+     }
+     my $track_start = $offsets->[$track_idx] || 0;
+     &run_menu($albums_ref, $current_ii);
+     if ($resume_album && ($resume_album ne $play_album || $resume_offset != $track_start)) {
+        $do_restart = 1;
+        kill(9, -$play_id) if $play_id > 0;
+     }
     } elsif (-e q#pidap.generated.previous# || -e q#pidap.generated.restart#) {
      kill(9, -$play_id);
     }
@@ -783,15 +796,11 @@ sub play_one_album {
    }
    unlink(q#pidap.generated.restart#);
   }
-  if ($do_restart || $restart_offset > 0) {
+  if ($restart_offset > 0) {
    $resume_album = $play_album;
-   $resume_offset = $do_restart ? $resume_offset : $restart_offset;
+   $resume_offset = $restart_offset;
   }
   return q#restart#;
- }
- if (-e q#pidap.generated.menu#) {
-    unlink(q#pidap.generated.menu#);
-    return q#menu#;
  }
  return q#next#;
 }
@@ -824,16 +833,21 @@ sub play_albums() {
  $ii = 0 if $ii < 0 || $ii > $#albums;
 
  while ($ii <= $#albums) {
+  if ($resume_album) {
+   for my $i (0 .. $#albums) {
+    if ($albums[$i] eq $resume_album) {
+     $ii = $i;
+     last;
+    }
+   }
+  }
   print("Album Name($ii): $albums[$ii]\n");
   &write_place_file($place_file, $ii);
-  my $action = &play_one_album($albums[$ii], \$volume_initialized, \%album_offsets_cache);
+  my $action = &play_one_album($albums[$ii], $ii, \@albums, \$volume_initialized, \%album_offsets_cache);
   if ($action eq q#prev#) {
    if ($ii > 0) { $ii--; } else { $ii = $#albums; }
   } elsif ($action eq q#restart#) {
-   # stay on same album
-  } elsif ($action eq q#menu#) {
-   &run_menu($albums[$ii]);
-   # stay on same album; run_menu may set resume_album/resume_offset
+   # stay on same album; resume_album/resume_offset already set
   } else {
    $ii++;
   }
@@ -846,12 +860,12 @@ sub play_albums() {
 # Update the TFT display with the current artist/album/track.
 #
 sub update_display {
-    my ($album_number, $album_path, $track_file) = @_;
+    my ($album_number, $album_path, $track_file, $album_count) = @_;
     return unless defined $album_number && $album_path && $track_file;
 
     my @parts = split(m{/}, $album_path);
     return if @parts < 2;
-    my $album_name  = "$album_number : " . $parts[-1];
+    my $album_name = $parts[-1];
     my $artist_name = $parts[-2];
 
     my $track_name = $track_file;
@@ -859,16 +873,26 @@ sub update_display {
     $track_name =~ s{\.(?:flac|mp3|ogg|m4a|wav)$}{}i;
 
     my $display = "$FindBin::Bin/pidap_display";
-    return unless -x $display;
+    if (-x $display) {
+        my $display_name = "$album_number : $album_name";
+        my $pid = fork;
+        return unless defined $pid;
+        if ($pid == 0) {
+            open(STDOUT, '>/dev/null') or die;
+            open(STDERR, '>/dev/null') or die;
+            exec($display, '-a', $artist_name, '-l', $display_name, '-t', $track_name);
+            exit;
+        }
+        return;
+    }
 
-    my $pid = fork;
-    return unless defined $pid;
-
-    if ($pid == 0) {
-        open(STDOUT, '>/dev/null') or die;
-        open(STDERR, '>/dev/null') or die;
-        exec($display, '-a', $artist_name, '-l', $album_name, '-t', $track_name);
-        exit;
+    if (open(my $fh, '>', '/dev/tty1')) {
+        my $count_str = (defined $album_count && $album_count > 0) ? "/$album_count" : '';
+        print $fh "\e[2J\e[H";
+        print $fh "\n$artist_name\n";
+        print $fh "$album_number$count_str: $album_name\n";
+        print $fh "$track_name\n";
+        close($fh);
     }
 }
 
@@ -913,6 +937,16 @@ sub print_run() {
           my $filter_pid = open(my $filter_fh, '|-', '/usr/bin/perl', $filter)
               or die "Can't start filter_output: $!\n";
           select((select($filter_fh), $| = 1)[0]);
+
+          # Feed the first track path to filter_output so the TFT shows
+          # the artist/album/track immediately, before sox prints anything.
+          my $first_file;
+          if ($cmd =~ /^play\s+"([^"]+)"/) {
+              $first_file = $1;
+          } elsif ($cmd =~ /^play\s+(\S+)/) {
+              $first_file = $1;
+          }
+          print $filter_fh "$first_file:\n" if $first_file;
 
           open(my $play_fh, '-|', '/bin/sh', '-c', "$cmd 2>&1")
               or die "Can't start play: $!\n";
@@ -969,32 +1003,132 @@ sub led_off {
 
 
 #
-# Show a track menu for the current album and let the user scroll/select.
+# Show a multi-level menu: track -> album -> artist.
 #
 sub run_menu {
-   my ($play_album) = @_;
+   my ($albums_ref, $current_album_idx) = @_;
 
-   my ($files, $durations, $offsets, $total) = &get_album_offsets($play_album);
-   unless ($files && @$files) {
-      print "Menu: no tracks for $play_album\n";
-      return;
-   }
+   my @albums = @$albums_ref;
+   $current_album_idx = 0 if $current_album_idx < 0 || $current_album_idx > $#albums;
 
-   my @items = map { my $f = $_; $f =~ s{^.*/}{}; $f; } @$files;
-
-   my $selected = 0;
-   my $did_select = 0;
    my ($current_album, $current_offset) = &read_current_album;
-   if ($current_album && $current_album eq $play_album && $current_offset > 0) {
-      # keep current_offset so we can resume on exit
+   $current_offset ||= 0;
+
+   # Group albums by parent directory (artist).
+   my %artist_paths;
+   my %artist_albums;
+   for my $i (0 .. $#albums) {
+      my $p = $albums[$i];
+      my $parent = ($p =~ m{^(.*)/[^/]+$}) ? $1 : '';
+      $artist_paths{$parent} = 1 if $parent;
+      push @{$artist_albums{$parent}}, $i;
    }
+   my @artists = sort { (my $aa = $a) =~ s{^.*/}{}; (my $bb = $b) =~ s{^.*/}{}; $aa cmp $bb } keys %artist_paths;
+   my %artist_to_idx;
+   for my $i (0 .. $#artists) {
+      $artist_to_idx{$artists[$i]} = $i;
+   }
+   for my $artist (keys %artist_albums) {
+      $artist_albums{$artist} = [ sort { my $aa = $albums[$a]; $aa =~ s{^.*/}{}; my $bb = $albums[$b]; $bb =~ s{^.*/}{}; $aa cmp $bb } @{$artist_albums{$artist}} ];
+   }
+   my @artist_album_lists = map { $artist_albums{$_} } @artists;
+
+   # Group artists by parent directory (genre).
+   my %genre_paths;
+   my %genre_artists;
+   for my $artist (@artists) {
+      my $parent = ($artist =~ m{^(.*)/[^/]+$}) ? $1 : '';
+      $genre_paths{$parent} = 1 if $parent;
+      push @{$genre_artists{$parent}}, $artist;
+   }
+   my @genres = sort { (my $aa = $a) =~ s{^.*/}{}; (my $bb = $b) =~ s{^.*/}{}; $aa cmp $bb } keys %genre_paths;
+   for my $genre (keys %genre_artists) {
+      $genre_artists{$genre} = [ sort { (my $aa = $a) =~ s{^.*/}{}; (my $bb = $b) =~ s{^.*/}{}; $aa cmp $bb } @{$genre_artists{$genre}} ];
+   }
+   my @genre_artist_lists = map { $genre_artists{$_} } @genres;
+
+   # Find current genre, artist, album-within-artist, and track positions.
+   my $current_genre_idx = 0;
+   my $current_artist_in_genre_idx = 0;
+   my $current_artist_idx = 0;
+   my $current_album_in_artist_idx = 0;
+   for my $gi (0 .. $#genres) {
+      my $artists_for = $genre_artist_lists[$gi];
+      for my $j (0 .. $#$artists_for) {
+         my $ai = $artist_to_idx{$artists_for->[$j]};
+         my $albums_for = $artist_album_lists[$ai];
+         for my $k (0 .. $#$albums_for) {
+            if ($albums_for->[$k] == $current_album_idx) {
+               $current_genre_idx = $gi;
+               $current_artist_in_genre_idx = $j;
+               $current_artist_idx = $ai;
+               $current_album_in_artist_idx = $k;
+               last;
+            }
+         }
+      }
+   }
+
+   my ($track_files, $track_durations, $track_offsets);
+   my $current_track_idx = 0;
+   ($track_files, $track_durations, $track_offsets) = &get_album_offsets($albums[$current_album_idx]);
+   if ($track_durations && @$track_durations) {
+      my $cum = 0;
+      for my $i (0 .. $#$track_durations) {
+         $cum += $track_durations->[$i];
+         if ($cum > $current_offset) {
+            $current_track_idx = $i;
+            last;
+         }
+      }
+   }
+   my $current_track_file = $track_files->[$current_track_idx] // '';
+
+   my $genre_idx = $current_genre_idx;
+   my $artist_in_genre_idx = $current_artist_in_genre_idx;
+   my $artist_idx = $current_artist_idx;
+   my $album_in_artist_idx = $current_album_in_artist_idx;
+   my $album_idx = $current_album_idx;
+   my $track_album_idx = $album_idx;
+   my $level = 3;          # 0 = genre, 1 = artist, 2 = album, 3 = track
+   my $selected = $current_track_idx;
+   my @items;
+   my $title = '';
+   my $did_select = 0;
 
    my $action;
    my $wait;
    while (1) {
-      my $title = $play_album;
-      $title =~ s{^.*/}{};
-      &display_menu_list('', \@items, $selected, 8);
+      if ($level == 0) {
+         @items = map { my $p = $_; $p =~ s{^.*/}{}; $p; } @genres;
+         $title = '';
+      } elsif ($level == 1) {
+         my $artists_for = $genre_artist_lists[$genre_idx];
+         @items = map { my $p = $_; $p =~ s{^.*/}{}; $p; } @$artists_for;
+         $title = $genres[$genre_idx];
+         $title =~ s{^.*/}{};
+      } elsif ($level == 2) {
+         my $albums_for = $artist_album_lists[$artist_idx];
+         @items = map { my $p = $albums[$_]; $p =~ s{^.*/}{}; $p; } @$albums_for;
+         $title = $artists[$artist_idx];
+         $title =~ s{^.*/}{};
+      } else {
+         if ($track_album_idx != $album_idx) {
+            my $album = $albums[$album_idx];
+            ($track_files, $track_durations, $track_offsets) = &get_album_offsets($album);
+            $track_album_idx = $album_idx;
+         }
+         unless ($track_files && @$track_files) {
+            $level = 2;
+            $selected = $album_in_artist_idx;
+            next;
+         }
+         @items = map { my $f = $_; $f =~ s{^.*/}{}; $f; } @$track_files;
+         $title = $albums[$album_idx];
+         $title =~ s{^.*/}{};
+      }
+
+      &display_menu_list($title, \@items, $selected, 12);
 
       $action = '';
       $wait = 0;
@@ -1008,33 +1142,83 @@ sub run_menu {
             unlink('pidap.generated.menu_action');
          }
          $action = '' if defined $action && $action =~ /^\s*$/;
-         last if ($action && $action =~ /^(up|down|select|exit)$/);
+         last if ($action && $action =~ /^(up|down|select|back)$/);
          if (!-e 'pidap.generated.menu_mode') {
-            $action = 'exit';
+            $action = 'back';
             last;
          }
          $wait++;
          Time::HiRes::usleep(100_000);
       }
 
-      if (!$action || $action eq 'exit') {
+      if (!$action || $action eq 'back') {
+         if ($level > 0) {
+            $level--;
+            if ($level == 2) {
+               $selected = $album_in_artist_idx;
+            } elsif ($level == 1) {
+               $selected = $artist_in_genre_idx;
+            } elsif ($level == 0) {
+               $selected = $genre_idx;
+            }
+            next;
+         }
          last;
       } elsif ($action eq 'up') {
          $selected-- if $selected > 0;
       } elsif ($action eq 'down') {
          $selected++ if $selected < $#items;
       } elsif ($action eq 'select') {
-         $resume_album = $play_album;
-         $resume_offset = $offsets->[$selected] || 0;
-         $did_select = 1;
-         last;
+         if ($level == 0) {
+            $genre_idx = $selected;
+            $level = 1;
+            $artist_in_genre_idx = ($genre_idx == $current_genre_idx) ? $current_artist_in_genre_idx : 0;
+            $selected = $artist_in_genre_idx;
+         } elsif ($level == 1) {
+            $artist_in_genre_idx = $selected;
+            $artist_idx = $artist_to_idx{$genre_artist_lists[$genre_idx][$selected]};
+            $level = 2;
+            $album_in_artist_idx = ($artist_idx == $current_artist_idx) ? $current_album_in_artist_idx : 0;
+            $selected = $album_in_artist_idx;
+         } elsif ($level == 2) {
+            $album_in_artist_idx = $selected;
+            $album_idx = $artist_album_lists[$artist_idx][$selected];
+            $level = 3;
+            if ($albums[$album_idx] eq $current_album) {
+               $selected = $current_track_idx;
+            } else {
+               $selected = 0;
+            }
+         } else {
+            $resume_album = $albums[$album_idx];
+            $resume_offset = $track_offsets->[$selected] || 0;
+            $did_select = 1;
+            last;
+         }
       }
    }
 
-   $resume_album = $play_album;
-   $resume_offset = $did_select ? ($offsets->[$selected] || 0) : ($current_offset || 0);
+   if ($did_select) {
+      $resume_album = $albums[$album_idx];
+      $resume_offset = $track_offsets->[$selected] || 0;
+   } else {
+      $resume_album = $albums[$current_album_idx];
+      $resume_offset = $current_offset || 0;
+   }
 
    &display_menu_list('', [], 0, 10);
+
+   my $restore_album_path = $did_select ? $resume_album : $current_album;
+   my $restore_track_file = $did_select ? ($track_files->[$selected] // '') : $current_track_file;
+   my $restore_album_num = -1;
+   for my $i (0 .. $#albums) {
+      if ($albums[$i] eq $restore_album_path) {
+         $restore_album_num = $i + 1;
+         last;
+      }
+   }
+   &update_display($restore_album_num, $restore_album_path, $restore_track_file, scalar(@albums));
+
    unlink('pidap.generated.menu_action') if -e 'pidap.generated.menu_action';
    unlink('pidap.generated.menu_mode') if -e 'pidap.generated.menu_mode';
 }
@@ -1049,17 +1233,25 @@ sub display_menu_list {
    $selected = $#$items_ref if $selected > $#$items_ref;
 
    my $total = scalar(@$items_ref);
+   my $item_lines = $visible_lines - ($title ? 1 : 0);
+   $item_lines = 1 if $item_lines < 1;
+
+   my $center_line = 7;
+   my $center_pos = $center_line - ($title ? 2 : 1);
+   $center_pos = 0 if $center_pos < 0;
+   $center_pos = $item_lines - 1 if $center_pos >= $item_lines;
+
    my $top = 0;
-   if ($total > $visible_lines) {
-      $top = $selected - int($visible_lines / 2);
-      $top = $total - $visible_lines if $top > $total - $visible_lines;
+   if ($total > $item_lines) {
+      $top = $selected - $center_pos;
       $top = 0 if $top < 0;
+      $top = $total - $item_lines if $top > $total - $item_lines;
    }
 
    if (open(my $fh, '>', '/dev/tty1')) {
       print $fh "\e[2J\e[H";  # clear and home
       print $fh "\e[32m$title\e[0m\n" if $title;
-      my $end = $top + $visible_lines - 1;
+      my $end = $top + $item_lines - 1;
       $end = $#$items_ref if $end > $#$items_ref;
       for my $i ($top .. $end) {
          my $item = $items_ref->[$i] // '';
