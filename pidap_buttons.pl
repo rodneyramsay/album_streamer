@@ -725,6 +725,8 @@ sub enter_menu {
     log_msg('Entering menu mode');
     $in_menu = 1;
     $last_menu_action = '';
+    my $af = get_flag_file('pidap.generated.menu_action');
+    unlink($af) if -e $af;
     if (open(my $rf, '>', get_flag_file('pidap.generated.menu'))) {
         print $rf "1\n";
         close($rf);
@@ -748,7 +750,7 @@ sub write_menu_action {
 
 sub handle_menu_press {
     my ($label) = @_;
-    my %action = (A => 'up', B => 'down', X => 'select', Y => 'exit');
+    my %action = (A => 'up', B => 'down', X => 'select', Y => 'back');
     my $act = $action{$label};
     return unless $act;
     log_msg("Menu: $label -> $act");
@@ -764,13 +766,9 @@ sub handle_menu_press {
 sub handle_menu_release {
     my ($label) = @_;
     return unless $in_menu;
-    my $act = $last_menu_action;
     $last_menu_action = '';
     $pressed{$label} = 0;
     $press_time{$label} = 0;
-    if ($act && ($act eq 'exit' || $act eq 'select')) {
-        $in_menu = 0;
-    }
 }
 
 sub check_menu_timeout {
@@ -781,6 +779,15 @@ sub check_menu_timeout {
     if ($elapsed >= $MENU_HOLD_SEC) {
         $y_pending = 0;
         enter_menu();
+    }
+}
+
+sub check_menu_state {
+    return unless $in_menu;
+    my $mf = get_flag_file('pidap.generated.menu_mode');
+    if (!-e $mf) {
+        $in_menu = 0;
+        $last_menu_action = '';
     }
 }
 
@@ -807,6 +814,7 @@ set_backlight(1);
 while (1) {
     check_parent();
     check_lock_timeout();
+    check_menu_state();
     check_gpiomon_events($sel, 0.05);
     check_backlight_timeout();
 }
