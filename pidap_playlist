@@ -227,7 +227,12 @@ while($run) {
 	    if(defined($play_categories{$category}) && defined($play_artists{$artist})) {
 	       if(!defined($opt_l) || ($album =~ m/$opt_l/)) {
 		  my $play_path = "${mount}/${category}/${artist}/${album}";
-	  my @tracks = sort glob("${play_path}*/*.flac");
+	  my @exts = qw(flac mp3 ogg m4a wav gsm amr);
+	  my @tracks;
+	  for my $ext (@exts) {
+	     push @tracks, glob("${play_path}*/*.$ext");
+	  }
+	  @tracks = sort @tracks;
 	
 	  next unless @tracks;
 	  my $key = "$artist/$album";
@@ -697,7 +702,12 @@ sub read_resume {
 
 sub get_album_offsets {
    my ($album) = @_;
-   my @files = sort glob("${album}*/*.flac");
+   my @exts = qw(flac mp3 ogg m4a wav gsm amr);
+   my @files;
+   for my $ext (@exts) {
+      push @files, glob("${album}*/*.$ext");
+   }
+   @files = sort @files;
    my @durations;
    my @offsets;
    my $cum = 0;
@@ -1064,7 +1074,7 @@ sub update_display {
 
     my $track_name = $track_file;
     $track_name =~ s{^.*/}{};
-    $track_name =~ s{\.(?:flac|mp3|ogg|m4a|wav)$}{}i;
+    $track_name =~ s{\.(?:flac|mp3|ogg|m4a|wav|gsm|amr)$}{}i;
 
     my $display = "$FindBin::Bin/pidap_display";
     return unless -x $display;

@@ -1,5 +1,7 @@
 #!/usr/bin/perl
 
+my ($last_artist, $last_album, $last_track);
+
 while(<>) {
     #
     # Only work on lines with the file name
@@ -10,7 +12,12 @@ while(<>) {
 	# Pull out Artist, Album, Track Name
 	#
  	if(m/\/([^\/]+)\/([^\/]+)\/([^\/]+)\:\s*$/) {
-	    ($artist, $album, $track) = ($1, $2, $3);
+	    my ($artist, $album, $track) = ($1, $2, $3);
+            $track =~ s/\.(?:flac|mp3|ogg|m4a|wav|gsm|amr)$//i;
+
+            next if ($artist eq ($last_artist // '')
+                  && $album  eq ($last_album  // '')
+                  && $track  eq ($last_track  // ''));
 
 	    $cue = `grep '\/${album}' pidap.generated.playlist`;
 	    if($cue =~ m/\s+(\d+)/) {
@@ -21,8 +28,9 @@ while(<>) {
 	    if($last =~ m/\s+(\d+)/) {
 		$last_num = $1;
 	    }
-            
-            
+
+            ($last_artist, $last_album, $last_track) = ($artist, $album, $track);
+
 	    print "\n";
 	    print "$artist\n";
 	    print "${cue_num}\/${last_num}: ${album}\n";

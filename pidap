@@ -465,7 +465,12 @@ sub read_resume {
 
 sub get_album_offsets {
    my ($album) = @_;
-   my @files = sort glob("${album}*/*.flac");
+   my @exts = qw(flac mp3 ogg m4a wav gsm amr);
+   my @files;
+   for my $ext (@exts) {
+      push @files, glob("${album}*/*.$ext");
+   }
+   @files = sort @files;
    my @durations;
    my @offsets;
    my $cum = 0;
@@ -675,10 +680,14 @@ sub play_one_album {
      if ($next_offset_idx <= $#$offsets) {
       $resume_album = $play_album;
       $resume_offset = $offsets->[$next_offset_idx];
-      $do_restart = 1;
-      &led_track_blink();
-      $track_blink_until = Time::HiRes::time() + 0.15;
+     } else {
+      my $next_ii = ($current_ii + 1) % @albums;
+      $resume_album = $albums[$next_ii];
+      $resume_offset = 0;
      }
+     $do_restart = 1;
+     &led_track_blink();
+     $track_blink_until = Time::HiRes::time() + 0.15;
      kill(9, -$play_id) if $play_id > 0;
     } elsif ($g_prev_or_restart) {
      $g_prev_or_restart = 0;
@@ -700,7 +709,7 @@ sub play_one_album {
       $resume_offset = 0;
      }
      print("DEBUG: B+Y track_idx=$track_idx track_time=$track_time do_previous=$do_previous do_restart=$do_restart\n");
-     kill(9, -$play_id) if $play_id > 0;
+     kill(9, -$play_id) if $play_id > 0; 
     } elsif (-e q#pidap.generated.previous_track#) {
      unlink(q#pidap.generated.previous_track#);
      my $now = Time::HiRes::time();
@@ -711,14 +720,29 @@ sub play_one_album {
       last if $offsets->[$i] > $album_time;
       $track_idx = $i;
      }
-     if ($track_idx > 0) {
+     my $track_start = $offsets->[$track_idx];
+     my $track_time = $album_time - $track_start;
+     if ($track_time > 5) {
+      $resume_album = $play_album;
+      $resume_offset = $track_start;
+     } elsif ($track_idx > 0) {
       $resume_offset = $offsets->[$track_idx - 1];
+      $resume_album = $play_album;
      } else {
-      $resume_offset = 0;
+      my $prev_ii = ($current_ii - 1 + @albums) % @albums;
+      $resume_album = $albums[$prev_ii];
+      my $prev_entry;
+      if (exists $album_offsets_cache_ref->{$albums[$prev_ii]}) {
+         $prev_entry = $album_offsets_cache_ref->{$albums[$prev_ii]};
+      } else {
+         $prev_entry = [&get_album_offsets($albums[$prev_ii])];
+         $album_offsets_cache_ref->{$albums[$prev_ii]} = $prev_entry;
+      }
+      my $poff = $prev_entry->[2];
+      $resume_offset = ($poff && @$poff) ? $poff->[-1] : 0;
      }
-     $resume_album = $play_album;
      $do_restart = 1;
-     print("DEBUG: previous_track track_idx=$track_idx resume_offset=$resume_offset\n");
+     print("DEBUG: previous_track track_idx=$track_idx track_time=$track_time resume_offset=$resume_offset resume_album=$resume_album\n");
      kill(9, -$play_id);
     } elsif (-e q#pidap.generated.menu#) {
      unlink(q#pidap.generated.menu#);
@@ -775,9 +799,27 @@ sub play_one_album {
         last if $offsets->[$i] > $album_time;
         $track_idx = $i;
      }
-     $resume_offset = 0;
-     $resume_offset = $offsets->[$track_idx - 1] if $track_idx > 0;
-     $resume_album = $play_album;
+     my $track_start = $offsets->[$track_idx];
+     my $track_time = $album_time - $track_start;
+     if ($track_time > 5) {
+        $resume_album = $play_album;
+        $resume_offset = $track_start;
+     } elsif ($track_idx > 0) {
+        $resume_offset = $offsets->[$track_idx - 1];
+        $resume_album = $play_album;
+     } else {
+        my $prev_ii = ($current_ii - 1 + @albums) % @albums;
+        $resume_album = $albums[$prev_ii];
+        my $prev_entry;
+        if (exists $album_offsets_cache_ref->{$albums[$prev_ii]}) {
+           $prev_entry = $album_offsets_cache_ref->{$albums[$prev_ii]};
+        } else {
+           $prev_entry = [&get_album_offsets($albums[$prev_ii])];
+           $album_offsets_cache_ref->{$albums[$prev_ii]} = $prev_entry;
+        }
+        my $poff = $prev_entry->[2];
+        $resume_offset = ($poff && @$poff) ? $poff->[-1] : 0;
+     }
      $do_restart = 1;
   }
 
@@ -874,7 +916,7 @@ sub update_display {
 
     my $track_name = $track_file;
     $track_name =~ s{^.*/}{};
-    $track_name =~ s{\.(?:flac|mp3|ogg|m4a|wav)$}{}i;
+    $track_name =~ s{\.(?:flac|mp3|ogg|m4a|wav|gsm|amr)$}{}i;
 
     my $display = "$FindBin::Bin/pidap_display";
     if (-x $display) {
@@ -905,11 +947,6 @@ sub update_display {
 #
 sub print_run() {
    ($cmd) = (@_);
-
-   #
-   #
-   #
-   print("$cmd\n");
 
    my $pid = fork;
    die "Failed to fork $!\n" unless defined $pid;
