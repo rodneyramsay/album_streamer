@@ -2,7 +2,7 @@
 
 Stream music from NAS using album organization. 
 
-Also PIDAP!! Pi Digital Album Player. An album based streamer for RPI Zero + Porate-Audio Headphone Amp!!
+Also PIDAP!! Pi Digital Album Player. An album based streamer for RPI Zero + Pirate-Audio Headphone Amp!!
 
 Command Syntax:
 
