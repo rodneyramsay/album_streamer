@@ -33,8 +33,12 @@ disable_fw_kms_setup=1
 # Disable compensation for displays with overscan
 disable_overscan=0
 
-# Run as fast as firmware / board allows
-arm_boost=1
+#
+## arm_boost=0
+## arm_freq=700
+## arm_freq_min=700
+over_voltage=-4
+over_voltage_min=-4
 
 dtoverlay=disable-wifi
 dtoverlay=disable-bt
@@ -59,3 +63,7 @@ dtparam=width=240,height=240
 dtoverlay=hifiberry-dac
 
 hdmi_blanking=2
+hdmi_force_hotplug=0
+hdmi_ignore_hotplug=1
+
+

@@ -7,6 +7,7 @@ use Cwd qw(abs_path);
 use Time::HiRes qw(sleep);
 
 my $ROOT = abs_path(dirname($FindBin::Bin));
+my $RUN_DIR = $ENV{PIDAP_RUN_DIR} || $ROOT;
 chdir($ROOT) or die "chdir $ROOT: $!";
 
 my %PIN = (A => 5, B => 6, X => 16, Y => 24);
@@ -22,7 +23,7 @@ sub log_test {
 }
 
 sub play_pid {
-    my $file = "$ROOT/pidap.generated.play_pid";
+    my $file = "$RUN_DIR/pidap.generated.play_pid";
     return 0 unless -r $file;
     open(my $fh, '<', $file) or return 0;
     my $line = <$fh>;

@@ -35,6 +35,14 @@ while(<>) {
 	    print "$artist\n";
 	    print "${cue_num}\/${last_num}: ${album}\n";
 	    print "$track\n";
+
+	    my $RUN_DIR = $ENV{PIDAP_RUN_DIR} || '.';
+	    if (open(my $df, '>', "$RUN_DIR/pidap.generated.display")) {
+	        print $df "\n$artist\n";
+	        print $df "${cue_num}\/${last_num}: ${album}\n";
+	        print $df "$track\n";
+	        close($df);
+	    }
 	}
     }
 }

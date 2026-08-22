@@ -16,7 +16,7 @@ my $LOG_FILE = $ENV{PIDAP_LOG_FILE} || '/tmp/pidap_buttons.log';
 my $PID_FILE = $ENV{PIDAP_PID_FILE} || ($FindBin::Bin . '/pidap.generated.play_pid');
 my $VOLUME_CONTROL = $ENV{PIDAP_VOLUME_CONTROL} || 'Amp';
 my $VOLUME_STEP = $ENV{PIDAP_VOLUME_STEP} || 2;
-my $LOCK_HOLD_SEC = $ENV{PIDAP_LOCK_HOLD_SEC} || 5.0;
+my $LOCK_HOLD_SEC = $ENV{PIDAP_LOCK_HOLD_SEC} || 3.2;
 my $MENU_HOLD_SEC = $ENV{PIDAP_MENU_HOLD_SEC} || 1.5;
 my $GPIO_CHIP = $ENV{PIDAP_GPIO_CHIP} || '';
 
@@ -45,8 +45,8 @@ my $y_pending = 0;
 my $in_menu = 0;
 my $last_menu_action = '';
 my $last_menu_repeat = 0;
-my $MENU_REPEAT_INITIAL = 0.4;
-my $MENU_REPEAT_INTERVAL = 0.2;
+my $MENU_REPEAT_INITIAL = 0.6;
+my $MENU_REPEAT_INTERVAL = 0.35;
 my $pidap_pid = 0;
 my $last_play_pid = 0;
 my $album_start = 0;
@@ -56,9 +56,10 @@ my $GPIOMON_PID = 0;
 my $GPIOMON_BUFFER = '';
 
 my $BACKLIGHT_PIN = 13;
-my $BACKLIGHT_TIMEOUT = 60.0;
+my $BACKLIGHT_TIMEOUT = 15.0;
 my $backlight_on = 1;
 my $backlight_last = Time::HiRes::time();
+my $backlight_timer_armed = 0;
 my $backlight_check_next = 0;
 my $BL_POWER_PATHS;
 
@@ -74,13 +75,11 @@ STDERR->autoflush(1);
 
 sub log_msg {
     my ($msg) = @_;
+    return unless $LOG;
     my ($sec, $usec) = gettimeofday();
     my $ts = localtime($sec);
     my $line = sprintf("[%s.%06d] %s", $ts, $usec, $msg);
-    print "$line\n";
-    if ($LOG) {
-        print $LOG "$line\n";
-    }
+    print $LOG "$line\n";
 }
 
 sub parse_map {
@@ -461,6 +460,8 @@ sub restart_album {
 sub toggle_lock {
     $locked = !$locked;
     log_msg($locked ? 'Locked' : 'Unlocked');
+    set_backlight($locked ? 0 : 1);
+    $backlight_last = Time::HiRes::time();
 }
 
 sub get_bl_power_paths {
@@ -500,6 +501,7 @@ sub set_backlight {
 
 sub wake_or_bump {
     my ($label) = @_;
+    return if $locked;
     $backlight_last = Time::HiRes::time();
     if (!$backlight_on) {
         set_backlight(1);
@@ -508,6 +510,7 @@ sub wake_or_bump {
 }
 
 sub check_backlight_timeout {
+    return unless $backlight_timer_armed;
     return if Time::HiRes::time() < $backlight_check_next;
     $backlight_check_next = Time::HiRes::time() + 1.0;
     return unless $backlight_on;
@@ -694,6 +697,7 @@ sub check_parent {
 }
 
 sub check_play_pid {
+    return if $backlight_timer_armed;
     my $pid = get_play_pid();
     return unless $pid;
     if ($pid != $last_play_pid) {
@@ -702,6 +706,9 @@ sub check_play_pid {
         my $offset = $ra[1] || 0;
         $album_start = Time::HiRes::time() - $offset;
         log_msg("New play pid $pid, album_start set to $album_start (offset $offset)");
+        $backlight_timer_armed = 1;
+        $backlight_last = Time::HiRes::time();
+        log_msg('Backlight timer armed after first play started');
     }
 }
 
@@ -829,6 +836,7 @@ while (1) {
     check_menu_state();
     check_menu_repeat();
     check_gpiomon_events($sel, 0.05);
+    check_play_pid();
     check_backlight_timeout();
 }
 

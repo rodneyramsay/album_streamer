@@ -2,7 +2,7 @@
 
 [Unit]
 Description=PIDAP - Pi Digital Audio Player
-After=sound.target pidap-playlist.service local-fs.target
+After=sound.target pidap-playlist.service local-fs.target multi-user.target getty.target
 Wants=pidap-playlist.service
 RequiresMountsFor=/usr/local/Music
 

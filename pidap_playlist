@@ -6,6 +6,12 @@ use Getopt::Std;
 use FindBin;
 use Time::HiRes;
 
+$SIG{CHLD} = 'IGNORE';
+unless (-t STDOUT || $ENV{PIDAP_DEBUG}) {
+   open(STDOUT, '>', '/dev/null') or die "cannot redirect STDOUT: $!";
+   open(STDERR, '>&STDOUT') or die "cannot redirect STDERR: $!";
+}
+
 #
 # Button handler asks pidap to skip to the next track via SIGUSR1,
 # or asks for previous/restart via SIGUSR2 (B+Y).
@@ -49,15 +55,20 @@ if(defined($opt_m)) {
    @mounts = ("/usr/local/Music");
 }
 
+my $RUN_DIR = $ENV{PIDAP_RUN_DIR} || $FindBin::Bin;
+if ($ENV{PIDAP_RUN_DIR} && !-d $RUN_DIR) {
+   system('mkdir', '-p', $RUN_DIR) == 0 or die "cannot create $RUN_DIR: $!";
+}
+
 $playlist_file = "$FindBin::Bin/pidap.generated.playlist";
 $place_file = "$FindBin::Bin/pidap.generated.place";
+$resume_file = "$FindBin::Bin/pidap.generated.resume";
 
 #
 # Pirate Audio button / volume handler settings
 #
-$play_pid_file = "pidap.generated.play_pid";
-$resume_file = "pidap.generated.resume";
-$current_album_file = "pidap.generated.current_album";
+$play_pid_file = "$RUN_DIR/pidap.generated.play_pid";
+$current_album_file = "$RUN_DIR/pidap.generated.current_album";
 $ENV{PIDAP_PID_FILE} = $play_pid_file;
 $ENV{PIDAP_BUTTON_MAP} = $ENV{PIDAP_BUTTON_MAP} || "A:vol_up,B:vol_down,X:lock,Y:next_track";
 $ENV{PIDAP_VOLUME_CONTROL} = $ENV{PIDAP_VOLUME_CONTROL} || "Amp";
@@ -620,7 +631,7 @@ sub mount_usb_devices {
       push @usb_mounts, $dir;
    }
 
-   my $mfile = "$FindBin::Bin/pidap.generated.usb_mounts";
+   my $mfile = "$RUN_DIR/pidap.generated.usb_mounts";
    if (@usb_mounts) {
       if (open(my $uf, '>', $mfile)) {
          print $uf "$_\n" for @usb_mounts;
@@ -853,7 +864,7 @@ sub find_play_child {
 
 sub play_one_album {
  my ($play_album, $volume_initialized_ref, $album_offsets_cache_ref) = @_;
- unlink(q#pidap.generated.restart#) if -e q#pidap.generated.restart#;
+ unlink(qq#${RUN_DIR}/pidap.generated.restart#) if -e qq#${RUN_DIR}/pidap.generated.restart#;
  my ($files, $durations, $offsets, $total);
  if (exists $album_offsets_cache_ref->{$play_album}) {
   ($files, $durations, $offsets, $total) = @{$album_offsets_cache_ref->{$play_album}};
@@ -862,6 +873,10 @@ sub play_one_album {
   $album_offsets_cache_ref->{$play_album} = [$files, $durations, $offsets, $total];
  }
  &led_flash();
+ if (!$$volume_initialized_ref) {
+  &set_initial_volume;
+  $$volume_initialized_ref = 1;
+ }
  my $play_start_offset = 0;
  my $play_id = 0;
  if ($resume_album && $play_album eq $resume_album && $resume_offset > 0) {
@@ -882,10 +897,6 @@ sub play_one_album {
  }
  &led_off();
  &write_play_pid($play_id);
- if (!$$volume_initialized_ref) {
-  &set_initial_volume;
-  $$volume_initialized_ref = 1;
- }
  my $do_previous = 0;
  my $do_restart = 0;
  if ($play_id > 0) {
@@ -940,10 +951,10 @@ sub play_one_album {
       $resume_album = $play_album;
       $resume_offset = 0;
      }
-     print("DEBUG: B+Y track_idx=$track_idx track_time=$track_time do_previous=$do_previous do_restart=$do_restart\n");
+     print("DEBUG: B+Y track_idx=$track_idx track_time=$track_time do_previous=$do_previous do_restart=$do_restart\n") if $ENV{PIDAP_DEBUG};
      kill(9, -$play_id) if $play_id > 0;
-    } elsif (-e q#pidap.generated.previous_track#) {
-     unlink(q#pidap.generated.previous_track#);
+    } elsif (-e qq#${RUN_DIR}/pidap.generated.previous_track#) {
+     unlink(qq#${RUN_DIR}/pidap.generated.previous_track#);
      my $now = Time::HiRes::time();
      my $effective_pause = $total_pause_time + ($paused ? ($now - $pause_start) : 0);
      my $album_time = $play_start_offset + ($now - $start_time - $effective_pause);
@@ -959,9 +970,9 @@ sub play_one_album {
      }
      $resume_album = $play_album;
      $do_restart = 1;
-     print("DEBUG: previous_track track_idx=$track_idx resume_offset=$resume_offset\n");
+     print("DEBUG: previous_track track_idx=$track_idx resume_offset=$resume_offset\n") if $ENV{PIDAP_DEBUG};
      kill(9, -$play_id);
-    } elsif (-e q#pidap.generated.previous# || -e q#pidap.generated.restart#) {
+    } elsif (-e qq#${RUN_DIR}/pidap.generated.previous# || -e qq#${RUN_DIR}/pidap.generated.restart#) {
      kill(9, -$play_id);
     }
    }
@@ -991,22 +1002,22 @@ sub play_one_album {
   }
   &led_off();
  }
- print("DEBUG: before return do_previous=$do_previous do_restart=$do_restart\n");
- if ($do_previous || -e q#pidap.generated.previous#) {
-  unlink(q#pidap.generated.previous#) if -e q#pidap.generated.previous#;
+ print("DEBUG: before return do_previous=$do_previous do_restart=$do_restart\n") if $ENV{PIDAP_DEBUG};
+ if ($do_previous || -e qq#${RUN_DIR}/pidap.generated.previous#) {
+  unlink(qq#${RUN_DIR}/pidap.generated.previous#) if -e qq#${RUN_DIR}/pidap.generated.previous#;
   return q#prev#;
  }
- if ($do_restart || -e q#pidap.generated.restart#) {
+ if ($do_restart || -e qq#${RUN_DIR}/pidap.generated.restart#) {
   my $restart_offset = 0;
-  if (-e q#pidap.generated.restart#) {
-   if (open(my $rf, q#<#, q#pidap.generated.restart#)) {
+  if (-e qq#${RUN_DIR}/pidap.generated.restart#) {
+   if (open(my $rf, q#<#, qq#${RUN_DIR}/pidap.generated.restart#)) {
     while (<$rf>) {
      chomp;
      $restart_offset = $1 if (/^offset=([0-9.]+)/);
     }
     close($rf);
    }
-   unlink(q#pidap.generated.restart#);
+   unlink(qq#${RUN_DIR}/pidap.generated.restart#);
   }
   if ($do_restart || $restart_offset > 0) {
    $resume_album = $play_album;
@@ -1076,18 +1087,7 @@ sub update_display {
     $track_name =~ s{^.*/}{};
     $track_name =~ s{\.(?:flac|mp3|ogg|m4a|wav|gsm|amr)$}{}i;
 
-    my $display = "$FindBin::Bin/pidap_display";
-    return unless -x $display;
-
-    my $pid = fork;
-    return unless defined $pid;
-
-    if ($pid == 0) {
-        open(STDOUT, '>/dev/null') or die;
-        open(STDERR, '>/dev/null') or die;
-        exec($display, '-a', $artist_name, '-l', $album_name, '-t', $track_name);
-        exit;
-    }
+    # pidap_display removed; no external display helper is used.
 }
 
 #
@@ -1171,11 +1171,13 @@ sub led_init {
 
 sub led_flash {
    return unless $led_brightness;
+   led_write($led_trigger, 'none') if $led_trigger;
    led_write($led_brightness, 1);
 }
 
 sub led_track_blink {
    return unless $led_brightness;
+   led_write($led_trigger, 'none') if $led_trigger;
    led_write($led_brightness, 1);
 }
 

@@ -7,6 +7,7 @@ use Cwd qw(abs_path);
 use Time::HiRes qw(sleep);
 
 my $ROOT = abs_path(dirname($FindBin::Bin));
+my $RUN_DIR = $ENV{PIDAP_RUN_DIR} || $ROOT;
 chdir($ROOT) or die "chdir $ROOT: $!";
 
 my %PIN = (A => 5, B => 6, X => 16, Y => 24);
@@ -24,7 +25,7 @@ sub log_test {
 }
 
 sub play_pid {
-    my $file = "$ROOT/pidap.generated.play_pid";
+    my $file = "$RUN_DIR/pidap.generated.play_pid";
     return 0 unless -r $file;
     open(my $fh, '<', $file) or return 0;
     my $line = <$fh>;
@@ -132,7 +133,7 @@ sub read_playlist {
 
 sub read_current_album {
     my ($album, $offset) = ('', 0);
-    my $file = "$ROOT/pidap.generated.current_album";
+    my $file = "$RUN_DIR/pidap.generated.current_album";
     return ($album, $offset) unless -r $file;
     open(my $fh, '<', $file) or return ($album, $offset);
     while (<$fh>) {
@@ -199,7 +200,7 @@ sub restore_player {
     }
 
     # restart the album at the original offset
-    my $restart_file = "$ROOT/pidap.generated.restart";
+    my $restart_file = "$RUN_DIR/pidap.generated.restart";
     if (open(my $rf, '>', $restart_file)) {
         print $rf "offset=$initial_offset\n";
         close($rf);
