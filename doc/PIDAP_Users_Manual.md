@@ -4,12 +4,20 @@ PIDAP (Pi Digital Audio Player) is an album-centric FLAC player designed for the
 
 ## Architecture
 
-PIDAP is split into two programs:
+PIDAP is split into three programs, plus a helper control script:
 
 - `pidap_playlist` — runs first at boot to mount USB music partitions and build or preserve `pidap.generated.playlist`.
-- `pidap` — the player. It reads the generated playlist and plays the albums.
+- `pidap-menu` — a daemon that draws the on-screen menu and reads button navigation commands from a FIFO.
+- `pidap` — the player. It reads the generated playlist, plays the albums, and reads menu results from `pidap-menu`.
+- `pidap-ctl` — a convenience script for systemd service control: `pidap-ctl {start|stop|restart|status}`.
 
-`pidap_playlist` should always run before `pidap` because it is the only part that mounts USB drives. If the playlist already exists and no boot button is held, `pidap_playlist` simply ensures the mounts are in place and exits.
+`pidap_playlist` should always run before the others because it is the only part that mounts USB drives. If the playlist already exists and no boot button is held, `pidap_playlist` simply ensures the mounts are in place and exits.
+
+The menu and player communicate through named pipes (FIFOs) so neither has to busy-wait:
+
+- `pidap.generated.menu_in` — `pidap_buttons.pl` writes navigation commands (`show`, `up`, `down`, `select`, `back`).
+- `pidap.generated.menu_out` — `pidap-menu` writes the selected album and track offset.
+- `pidap.generated.menu_mode` — a flag file that tells `pidap_buttons.pl` the menu is active.
 
 ## Music Library Layout
 
@@ -82,7 +90,31 @@ If `pidap` is paused when power is removed, it saves the current album and offse
 
 If playback was stopped normally, the current album index is saved to `pidap.generated.place`. `pidap` uses this to resume from the last played album.
 
-## Persistence Files
+## `pidap-menu`
+
+`pidap-menu` is a daemon that listens for `show` commands from `pidap_buttons.pl`, draws the menu on the screen, and writes the chosen album/offset back to `pidap`. It is started by `pidap-menu.service` and is expected to be running before `pidap-play.service` starts.
+
+The menu is divided into a tree of lists:
+
+1. **Root** — choose between `Playlist` (all albums in playlist order) and every genre found in the music library.
+2. **Playlist** — all albums in the playlist order; selecting an album opens its track list.
+3. **Genre** — artists in that genre.
+4. **Artist** — albums by that artist.
+5. **Album** — tracks in that album; press **X** to start playing from the selected track.
+
+Use **A** / **B** to move the cursor, **X** to select or drill down, and **Y** to go back one level.
+
+## `pidap-ctl`
+
+`pidap-ctl` is a helper script for systemd. Run it as root:
+
+```
+sudo /home/rodney/album_streamer/pidap-ctl {start|stop|restart|status}
+```
+
+It `daemon-reload`s, stops services in reverse order, and starts them in the correct dependency order (`pidap-playlist`, `pidap-menu`, `pidap-play`).
+
+## Persistence and Runtime Files
 
 PIDAP keeps several small generated files in its working directory. Do not edit them manually unless you understand their purpose.
 
@@ -91,9 +123,12 @@ PIDAP keeps several small generated files in its working directory. Do not edit 
 | `pidap.generated.playlist` | Album play order, written by `pidap_playlist` and read by `pidap`. |
 | `pidap.generated.place` | Current album index while playing. Deleted when the playlist finishes. |
 | `pidap.generated.resume` | Paused album and track offset, used to resume after an unclean shutdown. |
-| `pidap.generated.current_album` | Track list and durations for the active album, used by the button handler. |
+| `pidap.generated.current_album` | Track list and durations for the active album, used by the button handler and menu. |
 | `pidap.generated.usb_mounts` | List of currently mounted USB directories, maintained by `pidap_playlist`. |
 | `pidap.generated.play_pid` | PID of the active playback process. |
+| `pidap.generated.menu_in` | FIFO that `pidap_buttons.pl` writes menu commands to. |
+| `pidap.generated.menu_out` | FIFO that `pidap-menu` writes selected album/offset to. |
+| `pidap.generated.menu_mode` | Flag file created while the menu is on screen. |
 
 ## Environment Variables
 
@@ -105,6 +140,11 @@ PIDAP keeps several small generated files in its working directory. Do not edit 
 | `PIDAP_INITIAL_VOLUME` | `40` | Volume percent set at startup. |
 | `PIDAP_LED_PATH` | (auto) | Path to the LED `brightness` file. |
 | `PIDAP_LED_TRIGGER` | (auto) | Path to the LED `trigger` file. |
+| `PIDAP_LOCK_HOLD_SEC` | `2.2` | Seconds to hold **X** to toggle lock. |
+| `PIDAP_MENU_HOLD_SEC` | `1.5` | Seconds to hold **Y** to enter the menu via the long-press timer. |
+| `PIDAP_LOG_FILE` | `/tmp/pidap_buttons.log` | Log file for the button handler. |
+| `PIDAP_RUN_DIR` | script directory | Working directory for generated files. |
+| `PIDAP_DEBUG` | (unset) | When set, `pidap` and `pidap_playlist` keep stdout/stderr unredirected. |
 | `AUDIODEV` | — | SoX output device (e.g., `hw:0` or `pulse`). |
 
 ## Controls
@@ -114,8 +154,9 @@ Button and combo mappings are documented in `doc/PIDAP_Controls.md`.
 ## Typical Boot Flow
 
 1. `pidap_playlist` runs, mounts USB drives, and either uses the existing playlist or builds a new one.
-2. `pidap` starts and begins playing from the saved place, or resumes from `pidap.generated.resume` if one exists.
-3. The button handler (`pidap_buttons.pl`) runs in the background and listens for button presses.
+2. `pidap-menu` starts and creates the menu FIFOs.
+3. `pidap` starts, opens `pidap.generated.menu_out`, and begins playback.
+4. The button handler (`pidap_buttons.pl`) runs in the background and listens for button presses.
 
 ## Notes
 

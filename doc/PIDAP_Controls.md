@@ -4,12 +4,12 @@ These are the default button mappings for `pidap`. The mapping can be overridden
 
 ## Buttons
 
-| Button | Short press | Long press (>= 3 s) |
-|--------|-------------|---------------------|
-| **A**  | Volume up   | --                   |
-| **B**  | Volume down | --                   |
-| **X**  | Pause / Resume playback | Toggle lock / unlock |
-| **Y**  | Enter menu  | --                   |
+| Button | Short press | Long press |
+|--------|-------------|------------|
+| **A**  | Volume up   | -- |
+| **B**  | Volume down | -- |
+| **X**  | Pause / Resume playback | Toggle lock / unlock (default ~2.2 s, see `PIDAP_LOCK_HOLD_SEC`) |
+| **Y**  | Enter menu  | Enter menu (also triggered by the hold timer at ~1.5 s, see `PIDAP_MENU_HOLD_SEC`) |
 
 ## Combos
 
@@ -23,24 +23,29 @@ These are the default button mappings for `pidap`. The mapping can be overridden
 
 ## Menu Mode
 
-Press **Y** to enter the menu. The menu starts at the **track** level of the currently playing album.
+Press **Y** to enter the menu. The menu starts at the **root** list, which contains:
+
+- **Playlist** — every album in the current playlist order.
+- **Genres** — every genre found in the music library (e.g., `Jam`, `Rock`, `Vinyl`).
 
 | Button | Action in menu |
 |--------|----------------|
 | **A**  | Move cursor up |
 | **B**  | Move cursor down |
 | **X**  | Select / drill down one level |
-| **Y**  | Go back one level |
+| **Y**  | Go back one level (at the root, **Y** exits the menu) |
 
-- The menu opens on the track list for the currently playing album.
-- At the track list, press **X** to start playback from the selected track.
-- Press **Y** from the track list to return to the album list.
-- At the album list, press **X** to show the tracks for the selected album.
-- Press **Y** from the album list to return to the artist list.
-- At the artist list, press **X** to show the albums for the selected artist.
-- Press **Y** from the artist list to return to the genre list.
-- At the genre list, press **X** to show the artists for the selected genre.
-- Press **Y** from the genre list to exit the menu and resume playback.
+### Menu hierarchy
+
+1. **Root** — choose `Playlist` or a genre.
+2. **Playlist** — albums in playlist order. Press **X** to see its tracks.
+3. **Genre** — artists in that genre. Press **X** to see their albums.
+4. **Artist** — albums by that artist. Press **X** to see an album's tracks.
+5. **Album / Track list** — tracks in an album. Press **X** on a track to start playback from that track.
+
+- Press **Y** at any list to go back to the previous level.
+- Press **Y** at the root to close the menu and resume playback.
+- Selecting a track in a different album jumps to that album; selecting a track in the currently playing album jumps to that track.
 
 ## Status LED
 
@@ -54,11 +59,11 @@ Press **Y** to enter the menu. The menu starts at the **track** level of the cur
 
 ## Track Boundary Precomputation
 
-`pidap` precomputes the duration and start offset of every track in the current album when it begins playback, and stores this in `pidap.generated.current_album`. The button handler uses this data to know which track is playing and to jump to the start of a specific track or the previous track. The button handler no longer needs to call `soxi` itself, so track skips and restarts are available immediately.
+`pidap` precomputes the duration and start offset of every track in the current album when it begins playback, and stores this in `pidap.generated.current_album`. The button handler and menu use this data to know which track is playing and to jump to the start of a specific track or the previous track. The button handler no longer needs to call `soxi` itself, so track skips and restarts are available immediately.
 
 ## Lock State
 
-- Holding **X** for 3 seconds toggles the lock.
+- Holding **X** for `PIDAP_LOCK_HOLD_SEC` seconds (default 2.2 s) toggles the lock.
 - When locked, the volume buttons (**A** and **B**) still work.
 - When locked, track/album navigation, pause/resume, and combos are ignored.
-- The only way to unlock is another long **X** press (3 seconds).
+- The only way to unlock is another long **X** press.
