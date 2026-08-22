@@ -1,0 +1,56 @@
+#!/bin/bash
+
+# Control script for the PIDAP services.
+# Run as root (or with sudo).
+
+if [ "$EUID" -ne 0 ]; then
+    echo "Please run as root or with: sudo $0 $*"
+    exit 1
+fi
+
+SERVICES="pidap-playlist.service pidap-menu.service pidap-play.service"
+ACTION=${1:-restart}
+
+reverse() {
+    # shellcheck disable=SC2086
+    for svc in $SERVICES; do
+        echo "$svc"
+    done | tac
+}
+
+case "$ACTION" in
+    start)
+        systemctl daemon-reload
+        for svc in $SERVICES; do
+            echo "Starting $svc"
+            systemctl start "$svc"
+        done
+        ;;
+    stop)
+        for svc in $(reverse); do
+            echo "Stopping $svc"
+            systemctl stop "$svc"
+        done
+        ;;
+    restart)
+        systemctl daemon-reload
+        for svc in $(reverse); do
+            echo "Stopping $svc"
+            systemctl stop "$svc" || true
+        done
+        for svc in $SERVICES; do
+            echo "Starting $svc"
+            systemctl start "$svc"
+        done
+        ;;
+    status)
+        for svc in $SERVICES; do
+            echo "---- $svc ----"
+            systemctl status --no-pager -l "$svc" || true
+        done
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
+esac
