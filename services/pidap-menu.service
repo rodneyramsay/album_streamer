@@ -1,0 +1,17 @@
+
+[Unit]
+Description=PIDAP menu daemon
+Before=pidap-play.service
+After=sound.target local-fs.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/rodney/album_streamer
+ExecStart=/usr/bin/perl /home/rodney/album_streamer/pidap-menu
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
