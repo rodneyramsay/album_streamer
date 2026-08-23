@@ -6,8 +6,6 @@ use Getopt::Std;
 use FindBin;
 use lib "$FindBin::Bin/lib";
 use Time::HiRes;
-use IO::Select;
-use Fcntl qw(O_RDWR O_NONBLOCK);
 use PIDAPAlbum qw(get_album_offsets write_current_album read_current_album build_resume_cmd);
 
 $SIG{CHLD} = 'IGNORE';
@@ -79,8 +77,8 @@ $ENV{PIDAP_VOLUME_CONTROL} = $ENV{PIDAP_VOLUME_CONTROL} || "Amp";
 $ENV{PIDAP_VOLUME_STEP} = $ENV{PIDAP_VOLUME_STEP} || "2";
 $ENV{PIDAP_INITIAL_VOLUME} = $ENV{PIDAP_INITIAL_VOLUME} || "40";
 
-my $build_only = 0;
-my $play_only  = 1;
+my $build_only = 1;
+my $play_only  = 0;
 
 #
 # LED control. Default to the Pi's on-board ACT/led0 LED.
@@ -134,17 +132,241 @@ my $resume_offset = 0;
 my $boot_applied = 0;
 my $sorted_playlist = 0;
 
-
 while($run) {
 
-   print("\n\n======================== PIDAP! ================================\n\n");
-
-   @play_albums = &read_playlist_file($playlist_file);
-   unless (@play_albums) {
-      print "No playlist file ($playlist_file) available, cannot play\n";
-      exit(1);
+   if ($build_only) {
+      my @usb_mounts = &mount_usb_devices();
+      &add_usb_music_roots(@usb_mounts);
    }
 
+   if (!$boot_mode && -r $playlist_file) {
+      print "USB mounts ready, using existing playlist\n";
+      exit(0);
+   }
+
+   print
+("Building Album List");
+
+   my %seen_albums = ();
+
+   #
+   # Check category directories across all music roots.
+   #
+   for my $mount (@mounts) {
+   foreach $category (split /\n/, `ls $mount/`) {
+      chomp($category);
+      next unless -d "$mount/$category";
+
+      #
+      # List of all categories for manipulating play list later.
+      #
+      push(@categories, $category);
+
+      #
+      # List of categories to play now.
+      #
+      if(!defined($opt_c) || ($category =~ m/$opt_c/)) {
+	 $play_categories{$category} = $category;
+	 push(@play_categories, $category);
+      }
+
+
+      #
+      # Check artist directories
+      #
+      foreach $artist (split /\n/, `ls $mount/$category/`) {
+	 chomp($artist);
+	 next unless -d "$mount/$category/$artist";
+
+	 #
+	 # List of all artists
+	 #
+	 push(@artists, $artist);
+
+	 #
+	 # If -a option only want to play artists matching name..
+	 # List of artists to play now.
+	 #
+	 if(defined($play_categories{$category}) &&
+	     (!defined($opt_a) || ($artist =~ m/$opt_a/))) {
+
+	    $play_artists{$artist} = $artist;
+	    push(@play_artists, $artist);
+	 }
+
+
+	 #
+	 # Check album directories
+	 #
+	 foreach $album (split /\n/, `ls $mount/$category/$artist | sort`) {
+	    print(".");
+
+	    chomp($album);
+
+	    #
+	    # For multi-disk albums, only remember disc 1.
+	    # Play multi-disk albums all together later...
+	    #
+	    if($album =~ m/dis[ck]_?(\d+)/i) {
+	       $disk_num = $1;
+	       next unless($disk_num =~ m/0*1/);
+	    }
+
+	    #
+	    # All Album names
+	    #
+	    push(@album_names, $album);
+
+	    $album_path = "${mount}/${category}/${artist}/${album}";
+    next unless -d $album_path;
+
+	    #
+	    # Build lists of albums.
+	    #
+	    push(@{$albums{$category}}, $album_path);
+	    push(@{$albums{$artist}}, $album_path);
+
+	    #
+	    # List of album full paths.
+	    #
+	    push(@albums, $album_path);
+
+	    #	    $last_track = `ls $album_path | tail -1`;
+	    #	    $last_track{$album_path} = "${mount}/${category}/${artist}/${album}/${last_track}";
+
+	    #
+	    # -l option only play matching albums.
+	    #
+	    if(defined($play_categories{$category}) && defined($play_artists{$artist})) {
+	       if(!defined($opt_l) || ($album =~ m/$opt_l/)) {
+		  my $play_path = "${mount}/${category}/${artist}/${album}";
+	  my @exts = qw(flac mp3 ogg m4a wav gsm amr);
+	  my @tracks;
+	  for my $ext (@exts) {
+	     push @tracks, glob("${play_path}*/*.$ext");
+	  }
+	  @tracks = sort @tracks;
+	
+	  next unless @tracks;
+	  my $key = "$artist/$album";
+  if ($seen_albums{$key}) {
+     print "\nDuplicate album: $key, using $seen_albums{$key}\n" if $build_only;
+     next;
+  }
+  $seen_albums{$key} = $play_path;
+  push(@play_albums, $play_path);
+	       }
+	    }
+	 }
+      }
+   }
+   }
+
+   #
+   # Summary of what we found.
+   #
+   my %uniq_categories = map { $_ => 1 } @categories;
+   print("Discovered " . scalar(@play_albums) . " albums in " . scalar(keys %uniq_categories) . " top-level categories\n");
+   print("Top-level categories: " . join(', ', sort keys %uniq_categories) . "\n");
+
+   #
+   # Start streaming albums
+   #
+   print("\n\n======================== PIDAP! ================================\n\n");
+
+   #
+   # Use a saved playlist if it exists and no filters are in effect.
+   # Filters change the album set, so we always build fresh for those.
+   #
+   my $using_filters = (defined($opt_c) || defined($opt_a) || defined($opt_l));
+   my $loaded_playlist = 0;
+   my @disk_albums = @play_albums;
+
+   #
+   # Boot-time button actions. A/B force a fresh rebuild; X just resets place.
+   #
+   if ($boot_mode && !$boot_applied) {
+      $boot_applied = 1;
+      if ($boot_mode eq 'A') {
+         print "Boot: hold A - regenerate random playlist\n";
+         $sorted_playlist = 0;
+         unlink($playlist_file) if -e $playlist_file;
+         unlink($place_file) if -e $place_file;
+         unlink($resume_file) if -e $resume_file;
+         $resume_album = '';
+         $resume_offset = 0;
+         $first_lp = 0;
+      } elsif ($boot_mode eq 'B') {
+         print "Boot: hold B - sorted playlist\n";
+         $sorted_playlist = 1;
+         unlink($playlist_file) if -e $playlist_file;
+         unlink($place_file) if -e $place_file;
+         unlink($resume_file) if -e $resume_file;
+         $resume_album = '';
+         $resume_offset = 0;
+         $first_lp = 0;
+      } elsif ($boot_mode eq 'X') {
+         print "Boot: hold X - start from first track\n";
+         unlink($place_file) if -e $place_file;
+         unlink($resume_file) if -e $resume_file;
+         $resume_album = '';
+         $resume_offset = 0;
+         $first_lp = 0;
+      }
+   }
+
+   #
+   # Use a saved playlist if it exists and no filters or rebuild is forced.
+   #
+   if (!$using_filters && -r $playlist_file && ((!$build_only && !$boot_mode) || ($build_only && $boot_mode eq 'X'))) {
+      my @saved = &read_playlist_file($playlist_file);
+      if (@saved) {
+         my %disk = map { $_ => 1 } @disk_albums;
+         my @valid = grep { -d $_ && $disk{$_} } @saved;
+         if (@valid) {
+            @play_albums = @valid;
+            $loaded_playlist = 1;
+            print("Using saved playlist order\n");
+         } else {
+            print("Warning: saved playlist is out of date, rebuilding\n");
+            unlink($playlist_file) if -e $playlist_file;
+         }
+      }
+   }
+
+   #
+   # No saved playlist: build a fresh one, shuffle or sort it, and save it.
+   # In play-only mode, do not generate the playlist here; that is the
+   # playlist generator's job.
+   #
+   unless ($loaded_playlist) {
+      if ($play_only) {
+         print "No playlist file ($playlist_file) available, cannot play\n";
+         exit(1);
+      }
+
+      if ($sorted_playlist) {
+         @play_albums = sort @play_albums;
+      } else {
+         @play_albums = &rand_array(@play_albums);
+      }
+
+      if (!$using_filters) {
+         if (open(my $cf, '>', $playlist_file)) {
+            foreach $jj (0 .. $#play_albums) {
+               printf($cf "CUESHEET:%7d %s\n", $jj, $play_albums[$jj]);
+            }
+            close($cf);
+         } else {
+            print "Warning: could not write $playlist_file: $!\n";
+         }
+         unlink($place_file) if -e $place_file;
+      }
+   }
+
+   #
+   # Restore resume position if paused before shutdown.
+   #
    ($resume_album, $resume_offset) = &read_resume;
    if ($resume_album) {
       my $found = 0;
@@ -161,26 +383,44 @@ while($run) {
          $resume_offset = 0;
          unlink($resume_file) if -e $resume_file;
       }
-   } else {
+   }
+
+   #
+   # Otherwise, restore our place in the playlist.
+   #
+   unless ($resume_album) {
       my $place = &read_place_file($place_file);
       if ($place > 0 && $place <= $#play_albums) {
          $first_lp = $place;
          print("Resuming playlist at index $first_lp: $play_albums[$first_lp]\n");
       } elsif ($place > $#play_albums && $place > 0) {
-         print "Playlist was finished; starting over\n";
+         print("Playlist was finished; starting over\n");
          unlink($place_file) if -e $place_file;
          $first_lp = 0;
       }
    }
 
+   #
+   # Print out cuesheet unless quiet mode.
+   #
    unless(defined($opt_q)) {
       foreach $jj (0 .. $#play_albums) {
          printf("CUESHEET:%7d %s\n", $jj, $play_albums[$jj]);
       }
    }
 
+   if ($build_only) {
+      print "Playlist built ($#play_albums albums), exiting build-only mode\n";
+      exit(0);
+   }
+
    &play_albums(@play_albums);
 
+   #
+   # Loop back to the beginning when the playlist finishes.
+   # If we were interrupted, the place file still exists and we
+   # resume from there. Use -p to stop after one pass.
+   #
    last if(defined($opt_p));
    if (-e $place_file) {
       next;
@@ -188,7 +428,6 @@ while($run) {
    $first_lp = 0;
    next;
 }
-
 
 
 #
@@ -442,33 +681,20 @@ sub set_initial_volume {
 
    my $control = $ENV{PIDAP_VOLUME_CONTROL} || 'Amp';
    my $initial = $ENV{PIDAP_INITIAL_VOLUME} || 40;
-   my $max = 60;
+   my $max = 20;
    my $attempt = 0;
 
    while($attempt < $max) {
-      my $out = qx{amixer sset $control ${initial}% 2>&1};
-      my $rc = $?;
-      if($out =~ /\[${initial}%\]/) {
+      my $rc = system("amixer sset $control ${initial}% >/dev/null 2>&1");
+      if($rc == 0) {
 	 print("Initial volume set to ${initial}%\n");
-	 return 1;
-      }
-      if($attempt == 0) {
-	 if(open(my $log, '>', '/tmp/pidap_volume.log')) {
-	    print $log "set_initial_volume: amixer sset $control ${initial}% failed (rc=$rc):\n$out\n";
-	    my $scontrols = qx{amixer scontrols 2>&1};
-	    print $log "amixer scontrols:\n$scontrols\n";
-	    close($log);
-	 }
-	 print("set_initial_volume: amixer sset $control ${initial}% failed (rc=$rc):\n$out");
-	 my $scontrols = qx{amixer scontrols 2>&1};
-	 print("amixer scontrols:\n$scontrols");
+	 return;
       }
       Time::HiRes::usleep(200_000);
       $attempt++;
    }
 
    print("Warning: could not set initial volume to ${initial}%\n");
-   return 0;
 }
 
 
@@ -559,8 +785,7 @@ sub find_play_child {
 }
 
 sub play_one_album {
- my ($play_album, $current_ii, $albums_ref, $volume_initialized_ref, $album_offsets_cache_ref, $menu_out_fh, $menu_out_sel) = @_;
- my @albums = @$albums_ref;
+ my ($play_album, $volume_initialized_ref, $album_offsets_cache_ref) = @_;
  unlink(qq#${RUN_DIR}/pidap.generated.restart#) if -e qq#${RUN_DIR}/pidap.generated.restart#;
  my ($files, $durations, $offsets, $total);
  if (exists $album_offsets_cache_ref->{$play_album}) {
@@ -571,42 +796,31 @@ sub play_one_album {
  }
  &led_flash();
  if (!$$volume_initialized_ref) {
-  if (!&set_initial_volume) {
-   &led_off;
-   return q#next#;
-  }
+  &set_initial_volume;
   $$volume_initialized_ref = 1;
  }
  my $play_start_offset = 0;
  my $play_id = 0;
- my $cmd;
  if ($resume_album && $play_album eq $resume_album && $resume_offset > 0) {
   $play_start_offset = $resume_offset;
   &write_current_album($play_album, $resume_offset, $files, $durations, $current_album_file);
-  $cmd = &build_resume_cmd($play_album, $resume_offset, $files, $durations);
-  $first_lp = 0;
- } else {
-  $play_start_offset = 0;
-  &write_current_album($play_album, 0, $files, $durations, $current_album_file);
-  $cmd = &build_resume_cmd($play_album, 0, $files, $durations);
- }
- if ($cmd) {
-  my $track_idx = 0;
-  for my $i (0 .. $#$offsets) {
-   $track_idx = $i if $offsets->[$i] <= $play_start_offset;
+  my $resume_cmd = &build_resume_cmd($play_album, $resume_offset, $files, $durations);
+  if ($resume_cmd) {
+   $play_id = &print_run($resume_cmd);
+   $first_lp = 0;
   }
-  print("%\n");
-  printf("Album: %s\nTrack: %d - %s\n", $play_album, $track_idx + 1, $files->[$track_idx]);
-  $play_id = &print_run($cmd);
+  $resume_album = q{};
+  $resume_offset = 0;
+  unlink($resume_file) if -e $resume_file;
+ } else {
+  &write_current_album($play_album, 0, $files, $durations, $current_album_file);
+  my $cmd = &build_resume_cmd($play_album, 0, $files, $durations);
+  $play_id = &print_run($cmd) if $cmd;
  }
- $resume_album = q{};
- $resume_offset = 0;
- unlink($resume_file) if -e $resume_file;
  &led_off();
  &write_play_pid($play_id);
  my $do_previous = 0;
  my $do_restart = 0;
- my $do_menu_select = 0;
  if ($play_id > 0) {
   my $start_time = Time::HiRes::time();
   my $track_blink_until = 0;
@@ -635,14 +849,10 @@ sub play_one_album {
      if ($next_offset_idx <= $#$offsets) {
       $resume_album = $play_album;
       $resume_offset = $offsets->[$next_offset_idx];
-     } else {
-      my $next_ii = ($current_ii + 1) % @albums;
-      $resume_album = $albums[$next_ii];
-      $resume_offset = 0;
+      $do_restart = 1;
+      &led_track_blink();
+      $track_blink_until = Time::HiRes::time() + 0.15;
      }
-     $do_restart = 1;
-     &led_track_blink();
-     $track_blink_until = Time::HiRes::time() + 0.15;
      kill(9, -$play_id) if $play_id > 0;
     } elsif ($g_prev_or_restart) {
      $g_prev_or_restart = 0;
@@ -664,7 +874,7 @@ sub play_one_album {
       $resume_offset = 0;
      }
      print("DEBUG: B+Y track_idx=$track_idx track_time=$track_time do_previous=$do_previous do_restart=$do_restart\n") if $ENV{PIDAP_DEBUG};
-     kill(9, -$play_id) if $play_id > 0; 
+     kill(9, -$play_id) if $play_id > 0;
     } elsif (-e qq#${RUN_DIR}/pidap.generated.previous_track#) {
      unlink(qq#${RUN_DIR}/pidap.generated.previous_track#);
      my $now = Time::HiRes::time();
@@ -675,29 +885,14 @@ sub play_one_album {
       last if $offsets->[$i] > $album_time;
       $track_idx = $i;
      }
-     my $track_start = $offsets->[$track_idx];
-     my $track_time = $album_time - $track_start;
-     if ($track_time > 5) {
-      $resume_album = $play_album;
-      $resume_offset = $track_start;
-     } elsif ($track_idx > 0) {
+     if ($track_idx > 0) {
       $resume_offset = $offsets->[$track_idx - 1];
-      $resume_album = $play_album;
      } else {
-      my $prev_ii = ($current_ii - 1 + @albums) % @albums;
-      $resume_album = $albums[$prev_ii];
-      my $prev_entry;
-      if (exists $album_offsets_cache_ref->{$albums[$prev_ii]}) {
-         $prev_entry = $album_offsets_cache_ref->{$albums[$prev_ii]};
-      } else {
-         $prev_entry = [&get_album_offsets($albums[$prev_ii])];
-         $album_offsets_cache_ref->{$albums[$prev_ii]} = $prev_entry;
-      }
-      my $poff = $prev_entry->[2];
-      $resume_offset = ($poff && @$poff) ? $poff->[-1] : 0;
+      $resume_offset = 0;
      }
+     $resume_album = $play_album;
      $do_restart = 1;
-     print("DEBUG: previous_track track_idx=$track_idx track_time=$track_time resume_offset=$resume_offset resume_album=$resume_album\n") if $ENV{PIDAP_DEBUG};
+     print("DEBUG: previous_track track_idx=$track_idx resume_offset=$resume_offset\n") if $ENV{PIDAP_DEBUG};
      kill(9, -$play_id);
     } elsif (-e qq#${RUN_DIR}/pidap.generated.previous# || -e qq#${RUN_DIR}/pidap.generated.restart#) {
      kill(9, -$play_id);
@@ -725,73 +920,11 @@ sub play_one_album {
     &led_off();
     $track_blink_until = 0;
    }
-   my $did_menu_read = 0;
-   if ($menu_out_sel) {
-    my @ready = $menu_out_sel->can_read(0.1);
-    if (@ready) {
-     my $line = <$menu_out_fh>;
-     if (defined $line) {
-      $did_menu_read = 1;
-      chomp $line;
-      my $next_line = <$menu_out_fh>;
-      if ($line =~ /^album=(.+)/) {
-       $resume_album = $1;
-       $resume_offset = 0;
-       if (defined $next_line && $next_line =~ /^offset=([0-9.]+)/) {
-        $resume_offset = $1;
-       }
-       $do_menu_select = 1;
-       print("DEBUG: menu result album=$resume_album offset=$resume_offset\n") if $ENV{PIDAP_DEBUG};
-       kill(9, -$play_id) if $play_id > 0;
-      } elsif ($line =~ /^cancel=1/) {
-       # ignore
-      }
-     }
-    }
-   }
-   Time::HiRes::usleep(100_000) unless $did_menu_read;
+   Time::HiRes::usleep(100_000);
   }
-
-  # Catch a previous_track request that arrived after the play process died,
-  # so pidap_buttons B+X / X+B does not accidentally fall through to next album.
-  if (-e qq#${RUN_DIR}/pidap.generated.previous_track#) {
-     unlink(qq#${RUN_DIR}/pidap.generated.previous_track#);
-     my $now = Time::HiRes::time();
-     my $effective_pause = $total_pause_time + ($paused ? ($now - $pause_start) : 0);
-     my $album_time = $play_start_offset + ($now - $start_time - $effective_pause);
-     my $track_idx = 0;
-     for my $i (0 .. $#$offsets) {
-        last if $offsets->[$i] > $album_time;
-        $track_idx = $i;
-     }
-     my $track_start = $offsets->[$track_idx];
-     my $track_time = $album_time - $track_start;
-     if ($track_time > 5) {
-        $resume_album = $play_album;
-        $resume_offset = $track_start;
-     } elsif ($track_idx > 0) {
-        $resume_offset = $offsets->[$track_idx - 1];
-        $resume_album = $play_album;
-     } else {
-        my $prev_ii = ($current_ii - 1 + @albums) % @albums;
-        $resume_album = $albums[$prev_ii];
-        my $prev_entry;
-        if (exists $album_offsets_cache_ref->{$albums[$prev_ii]}) {
-           $prev_entry = $album_offsets_cache_ref->{$albums[$prev_ii]};
-        } else {
-           $prev_entry = [&get_album_offsets($albums[$prev_ii])];
-           $album_offsets_cache_ref->{$albums[$prev_ii]} = $prev_entry;
-        }
-        my $poff = $prev_entry->[2];
-        $resume_offset = ($poff && @$poff) ? $poff->[-1] : 0;
-     }
-     $do_restart = 1;
-  }
-
   &led_off();
  }
  print("DEBUG: before return do_previous=$do_previous do_restart=$do_restart\n") if $ENV{PIDAP_DEBUG};
- return q#next# if $do_menu_select;
  if ($do_previous || -e qq#${RUN_DIR}/pidap.generated.previous#) {
   unlink(qq#${RUN_DIR}/pidap.generated.previous#) if -e qq#${RUN_DIR}/pidap.generated.previous#;
   return q#prev#;
@@ -808,9 +941,9 @@ sub play_one_album {
    }
    unlink(qq#${RUN_DIR}/pidap.generated.restart#);
   }
-  if ($restart_offset > 0) {
+  if ($do_restart || $restart_offset > 0) {
    $resume_album = $play_album;
-   $resume_offset = $restart_offset;
+   $resume_offset = $do_restart ? $resume_offset : $restart_offset;
   }
   return q#restart#;
  }
@@ -821,9 +954,6 @@ sub play_albums() {
  my (@albums) = @_;
  my $volume_initialized = 0;
  my %album_offsets_cache = ();
- my $menu_out_fh;
- sysopen($menu_out_fh, "$RUN_DIR/pidap.generated.menu_out", O_RDWR|O_NONBLOCK) or warn "cannot open menu_out FIFO: $!";
- my $menu_out_sel = IO::Select->new($menu_out_fh) if defined $menu_out_fh;
 
  # Resume from the actual last-played album if we can find it in
  # the current playlist.  A stale place index (from an old playlist)
@@ -848,21 +978,13 @@ sub play_albums() {
  $ii = 0 if $ii < 0 || $ii > $#albums;
 
  while ($ii <= $#albums) {
-  if ($resume_album) {
-   for my $i (0 .. $#albums) {
-    if ($albums[$i] eq $resume_album) {
-     $ii = $i;
-     last;
-    }
-   }
-  }
   print("Album Name($ii): $albums[$ii]\n");
   &write_place_file($place_file, $ii);
-  my $action = &play_one_album($albums[$ii], $ii, \@albums, \$volume_initialized, \%album_offsets_cache, $menu_out_fh, $menu_out_sel);
+  my $action = &play_one_album($albums[$ii], \$volume_initialized, \%album_offsets_cache);
   if ($action eq q#prev#) {
    if ($ii > 0) { $ii--; } else { $ii = $#albums; }
   } elsif ($action eq q#restart#) {
-   # stay on same album; resume_album/resume_offset already set
+   # stay on same album
   } else {
    $ii++;
   }
@@ -871,12 +993,35 @@ sub play_albums() {
  &led_off();
 }
 
+#
+# Update the TFT display with the current artist/album/track.
+#
+sub update_display {
+    my ($album_number, $album_path, $track_file) = @_;
+    return unless defined $album_number && $album_path && $track_file;
+
+    my @parts = split(m{/}, $album_path);
+    return if @parts < 2;
+    my $album_name  = "$album_number : " . $parts[-1];
+    my $artist_name = $parts[-2];
+
+    my $track_name = $track_file;
+    $track_name =~ s{^.*/}{};
+    $track_name =~ s{\.(?:flac|mp3|ogg|m4a|wav|gsm|amr)$}{}i;
+
+    # pidap_display removed; no external display helper is used.
+}
 
 #
 # Print command and system run it.
 #
 sub print_run() {
    ($cmd) = (@_);
+
+   #
+   #
+   #
+   print("$cmd\n");
 
    my $pid = fork;
    die "Failed to fork $!\n" unless defined $pid;
@@ -908,16 +1053,6 @@ sub print_run() {
           my $filter_pid = open(my $filter_fh, '|-', '/usr/bin/perl', $filter)
               or die "Can't start filter_output: $!\n";
           select((select($filter_fh), $| = 1)[0]);
-
-          # Feed the first track path to filter_output so the TFT shows
-          # the artist/album/track immediately, before sox prints anything.
-          my $first_file;
-          if ($cmd =~ /^play\s+"([^"]+)"/) {
-              $first_file = $1;
-          } elsif ($cmd =~ /^play\s+(\S+)/) {
-              $first_file = $1;
-          }
-          print $filter_fh "$first_file:\n" if $first_file;
 
           open(my $play_fh, '-|', '/bin/sh', '-c', "$cmd 2>&1")
               or die "Can't start play: $!\n";

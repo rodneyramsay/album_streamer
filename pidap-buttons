@@ -8,6 +8,8 @@ use IO::Select;
 use IO::Handle;
 use IPC::Open3;
 use FindBin;
+use lib "$FindBin::Bin/lib";
+use PIDAPAlbum qw(read_current_album);
 
 use vars qw($VERSION);
 $VERSION = '1.0';
@@ -16,8 +18,11 @@ my $LOG_FILE = $ENV{PIDAP_LOG_FILE} || '/tmp/pidap_buttons.log';
 my $PID_FILE = $ENV{PIDAP_PID_FILE} || ($FindBin::Bin . '/pidap.generated.play_pid');
 my $VOLUME_CONTROL = $ENV{PIDAP_VOLUME_CONTROL} || 'Amp';
 my $VOLUME_STEP = $ENV{PIDAP_VOLUME_STEP} || 2;
-my $LOCK_HOLD_SEC = $ENV{PIDAP_LOCK_HOLD_SEC} || 3.2;
+my $LOCK_HOLD_SEC = $ENV{PIDAP_LOCK_HOLD_SEC} || 2.2;
 my $MENU_HOLD_SEC = $ENV{PIDAP_MENU_HOLD_SEC} || 1.5;
+my $FALL_DEBOUNCE = $ENV{PIDAP_FALL_DEBOUNCE} || 0.15;
+my $RISE_DEBOUNCE = $ENV{PIDAP_RISE_DEBOUNCE} || 0.10;
+my $MIN_PRESS_SEC = $ENV{PIDAP_MIN_PRESS_SEC} || 0.05;
 my $GPIO_CHIP = $ENV{PIDAP_GPIO_CHIP} || '';
 
 my @BUTTONS = (5, 6, 16, 24);
@@ -38,6 +43,7 @@ my $x_armed = 0;
 my $x_toggled = 0;
 my %pressed = ();
 my %press_time = ();
+my %menu_pressed = ();
 my %last_fall = ();
 my %last_rise = ();
 my $combo_active_until = 0;
@@ -45,8 +51,8 @@ my $y_pending = 0;
 my $in_menu = 0;
 my $last_menu_action = '';
 my $last_menu_repeat = 0;
-my $MENU_REPEAT_INITIAL = 0.6;
-my $MENU_REPEAT_INTERVAL = 0.35;
+my $MENU_REPEAT_INITIAL = $ENV{PIDAP_MENU_REPEAT_INITIAL} || 0.6;
+my $MENU_REPEAT_INTERVAL = $ENV{PIDAP_MENU_REPEAT_INTERVAL} || 0.35;
 my $pidap_pid = 0;
 my $last_play_pid = 0;
 my $album_start = 0;
@@ -133,10 +139,13 @@ sub check_gpiomon_events {
             next unless defined $pin && defined $edge;
             next unless exists $PIN_TO_LABEL{$pin};
             my $now = Time::HiRes::time();
-            if ($edge eq 'falling' && $now - ($last_fall{$pin} || 0) < 0.05) {
+            if ($edge eq 'falling' && $now - ($last_fall{$pin} || 0) < $FALL_DEBOUNCE) {
                 next;
             }
-            if ($edge eq 'rising' && $now - ($last_rise{$pin} || 0) < 0.05) {
+            if ($edge eq 'rising' && $now - ($last_rise{$pin} || 0) < $RISE_DEBOUNCE) {
+                next;
+            }
+            if ($edge eq 'rising' && $now - ($last_fall{$pin} || 0) < $MIN_PRESS_SEC) {
                 next;
             }
             if ($edge eq 'falling') { $last_fall{$pin} = $now; }
@@ -352,32 +361,12 @@ sub previous_album {
     $combo_active_until = Time::HiRes::time() + 0.3;
 }
 
-sub read_current_album {
+sub current_track_info {
     my $cf = $PID_FILE;
     $cf =~ s/[^\/]+$//;
     $cf .= '/' if $cf && $cf !~ m|/$|;
     $cf .= 'pidap.generated.current_album';
-    my ($album, $offset, @files, @durations);
-    if (open(my $f, '<', $cf)) {
-        while (<$f>) {
-            chomp;
-            if (/^album=(.+)/) {
-                $album = $1;
-            } elsif (/^offset=([0-9.]+)/) {
-                $offset = $1;
-            } elsif (/^track:(\d+):([0-9.]+)=(.+)/) {
-                my ($idx, $dur, $path) = ($1, $2, $3);
-                $files[$idx] = $path;
-                $durations[$idx] = $dur;
-            }
-        }
-        close($f);
-    }
-    return ($album, $offset, \@files, \@durations, $cf);
-}
-
-sub current_track_info {
-    my ($album, $start_offset, $files, $durations) = read_current_album();
+    my ($album, $start_offset, $files, $durations) = read_current_album($cf);
     return undef unless $album && @$durations;
     my $total = 0;
     $total += $_ for @$durations;
@@ -626,9 +615,17 @@ sub handle_release {
     return unless $was_pressed;
 
     my $func = $BUTTON_MAP->{$label};
+    log_msg("release $label, func=$func, in_menu=$in_menu, menu_pressed=" . ($menu_pressed{$label} // ''));
 
     if ($in_menu) {
         handle_menu_release($label);
+        return;
+    }
+
+    if ($menu_pressed{$label}) {
+        log_msg("release guard for $label (menu press)");
+        $menu_pressed{$label} = 0;
+        $press_time{$label} = 0;
         return;
     }
 
@@ -702,7 +699,11 @@ sub check_play_pid {
     return unless $pid;
     if ($pid != $last_play_pid) {
         $last_play_pid = $pid;
-        my @ra = read_current_album();
+        my $cf = $PID_FILE;
+        $cf =~ s/[^\/]+$//;
+        $cf .= '/' if $cf && $cf !~ m|/$|;
+        $cf .= 'pidap.generated.current_album';
+        my @ra = read_current_album($cf);
         my $offset = $ra[1] || 0;
         $album_start = Time::HiRes::time() - $offset;
         log_msg("New play pid $pid, album_start set to $album_start (offset $offset)");
@@ -735,26 +736,28 @@ sub enter_menu {
     log_msg('Entering menu mode');
     $in_menu = 1;
     $last_menu_action = '';
-    my $af = get_flag_file('pidap.generated.menu_action');
-    unlink($af) if -e $af;
-    if (open(my $rf, '>', get_flag_file('pidap.generated.menu'))) {
-        print $rf "1\n";
-        close($rf);
+    my $mf = get_flag_file('pidap.generated.menu_mode');
+    if (open(my $fh, '>', $mf)) {
+        print $fh "1\n";
+        close($fh);
     }
-    if (open(my $mf, '>', get_flag_file('pidap.generated.menu_mode'))) {
-        print $mf "1\n";
-        close($mf);
+    my $fifo = get_flag_file('pidap.generated.menu_in');
+    if (open(my $fh, '>', $fifo)) {
+        print $fh "show\n";
+        close($fh);
+    } else {
+        log_msg("Could not write to menu_in FIFO $fifo: $!");
     }
 }
 
 sub write_menu_action {
     my ($action) = @_;
-    my $af = get_flag_file('pidap.generated.menu_action');
-    if (open(my $rf, '>', $af)) {
-        print $rf "$action\n";
-        close($rf);
+    my $fifo = get_flag_file('pidap.generated.menu_in');
+    if (open(my $fh, '>', $fifo)) {
+        print $fh "$action\n";
+        close($fh);
     } else {
-        log_msg("Could not write menu action $action: $!");
+        log_msg("Could not write menu action $action to $fifo: $!");
     }
 }
 
@@ -767,6 +770,7 @@ sub handle_menu_press {
     write_menu_action($act);
     $last_menu_action = $act;
     $last_menu_repeat = Time::HiRes::time() + $MENU_REPEAT_INITIAL;
+    $menu_pressed{$label} = 1;
 }
 
 sub handle_menu_release {
@@ -775,6 +779,7 @@ sub handle_menu_release {
     $last_menu_action = '';
     $pressed{$label} = 0;
     $press_time{$label} = 0;
+    $menu_pressed{$label} = 0;
 }
 
 sub check_menu_timeout {
@@ -792,6 +797,7 @@ sub check_menu_state {
     return unless $in_menu;
     my $mf = get_flag_file('pidap.generated.menu_mode');
     if (!-e $mf) {
+        log_msg("check_menu_state: menu_mode gone, leaving menu");
         $in_menu = 0;
         $last_menu_action = '';
         $last_menu_repeat = 0;
@@ -821,7 +827,7 @@ $SIG{INT} = \&handle_signal;
 $SIG{TERM} = \&handle_signal;
 $SIG{HUP} = 'IGNORE';
 
-log_msg("pidap_buttons.pl starting, PID=$$");
+log_msg("pidap-buttons starting, PID=$$");
 log_msg("Button map: " . join(',', map { "$_." . ($BUTTON_MAP->{$_} || '') } @LABELS));
 
 my $gpiomon_fh = start_gpiomon();

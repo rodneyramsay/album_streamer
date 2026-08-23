@@ -1,16 +1,19 @@
 #!/usr/bin/perl
 
 use FindBin;
+use lib "$FindBin::Bin/lib";
 use Time::HiRes;
 use IO::Select;
 use POSIX;
+use PIDAPAlbum qw(get_album_offsets read_current_album);
 
 my $MENU_COLUMNS = 24;
 my $MENU_ITEM_MAX  = $MENU_COLUMNS - 1;
 my $HSCROLL_INTERVAL = 0.35;
-my %ALBUM_OFFSETS_CACHE = ();
+my $NAV_COOLDOWN = $ENV{PIDAP_MENU_NAV_COOLDOWN} || 0.15;
 
 my $RUN_DIR = $ENV{PIDAP_RUN_DIR} || $FindBin::Bin;
+my $last_nav_time = 0;
 if ($ENV{PIDAP_RUN_DIR} && !-d $RUN_DIR) {
     system('mkdir', '-p', $RUN_DIR) == 0 or die "cannot create $RUN_DIR: $!\n";
 }
@@ -39,13 +42,6 @@ for my $f ($menu_in_fifo, $menu_out_fifo) {
     }
 }
 
-sub soxi_duration {
-    my ($file) = @_;
-    my $out = `soxi -D "$file" 2>/dev/null`;
-    return 0 unless defined $out && $out =~ /^([0-9.]+)/;
-    return $1 + 0;
-}
-
 sub read_playlist_file {
     my ($file) = @_;
     my @paths = ();
@@ -64,41 +60,6 @@ sub read_playlist_file {
     return @paths;
 }
 
-sub read_current_album {
-    my ($album, $offset) = ('', 0);
-    if (-r $current_album_file && open(my $cf, '<', $current_album_file)) {
-        while (<$cf>) {
-            chomp;
-            $album = $1 if /^album=(.+)/;
-            $offset = $1 if /^offset=([0-9.]+)/;
-        }
-        close($cf);
-    }
-    return ($album, $offset);
-}
-
-sub get_album_offsets {
-    my ($album) = @_;
-    return @{$ALBUM_OFFSETS_CACHE{$album}} if exists $ALBUM_OFFSETS_CACHE{$album};
-    my @exts = qw(flac mp3 ogg m4a wav gsm amr);
-    my @files;
-    for my $ext (@exts) {
-        push @files, glob("${album}*/*.$ext");
-    }
-    @files = sort @files;
-    my @durations;
-    my @offsets;
-    my $cum = 0;
-    for my $f (@files) {
-        my $d = soxi_duration($f);
-        push @durations, $d;
-        push @offsets, $cum;
-        $cum += $d;
-    }
-    my $result = [\@files, \@durations, \@offsets, $cum];
-    $ALBUM_OFFSETS_CACHE{$album} = $result;
-    return @{$result};
-}
 
 sub display_menu_list {
     my ($title, $items_ref, $selected, $visible_lines, $full) = @_;
@@ -207,7 +168,7 @@ sub run_menu {
     my @albums = @$albums_ref;
     $current_album_idx = 0 if $current_album_idx < 0 || $current_album_idx > $#albums;
 
-    my ($current_album, $current_offset) = &read_current_album;
+    my ($current_album, $current_offset) = read_current_album($current_album_file);
     $current_offset ||= 0;
 
     # Group albums by parent directory (artist).
@@ -392,8 +353,13 @@ sub run_menu {
                 chomp $line;
                 $line =~ s/^\s+|\s+$//g;
                 if ($line =~ /^(up|down|select|back)$/) {
-                    $action = $line;
-                    log_warn("menu action: $action");
+                    if ($line =~ /^(up|down)$/ && Time::HiRes::time() - $last_nav_time < $NAV_COOLDOWN) {
+                        log_warn("ignoring $line: nav cooldown");
+                    } else {
+                        $action = $line;
+                        $last_nav_time = Time::HiRes::time() if $line =~ /^(up|down)$/;
+                        log_warn("menu action: $action");
+                    }
                 } elsif ($line eq 'show') {
                     # Already in the menu; continue the existing action loop.
                 }
@@ -539,7 +505,7 @@ while (1) {
         next;
     }
 
-    my ($current_album, $current_offset) = read_current_album;
+    my ($current_album, $current_offset) = read_current_album($current_album_file);
     my $current_album_idx = 0;
     for my $i (0 .. $#play_albums) {
         if ($play_albums[$i] eq $current_album) {
