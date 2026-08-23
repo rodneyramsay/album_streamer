@@ -2,8 +2,9 @@
 
 [Unit]
 Description=PIDAP - Pi Digital Audio Player
-After=sound.target pidap-playlist.service local-fs.target multi-user.target getty.target
+After=sound.target local-fs.target pidap-playlist.service pidap-menu.service multi-user.target getty.target
 Wants=pidap-playlist.service
+Wants=pidap-menu.service
 RequiresMountsFor=/usr/local/Music
 
 [Service]
@@ -11,6 +12,7 @@ Type=simple
 WorkingDirectory=/home/rodney/album_streamer
 ExecStart=/usr/bin/perl /home/rodney/album_streamer/pidap
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PIDAP_DEBUG=1"
 Restart=always
 RestartSec=5
 User=root

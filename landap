@@ -9,7 +9,7 @@ use Time::HiRes;
 
 
 $usage =
-    "yass [-c <category>] [-a <artist>] [-l <album>] [-m <mount>] [-p] [-q] [-r]\n" .
+    "landap [-c <category>] [-a <artist>] [-l <album>] [-m <mount>] [-p] [-q] [-r]\n" .
     "\n" .
     "<category>, <artist>, and <album> arguments can be perl regex or simple string\n" .
     "\n" .
