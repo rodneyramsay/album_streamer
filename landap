@@ -2,10 +2,11 @@
 
 
 use POSIX ":sys_wait_h";
-use Proc::Killfam;
 use Getopt::Std;
-use Term::ReadKey;
 use Time::HiRes;
+use FindBin;
+use lib "$FindBin::Bin/lib";
+use PIDAPAlbum qw(get_album_offsets read_current_album build_resume_cmd write_current_album);
 
 
 $usage =
@@ -16,6 +17,7 @@ $usage =
     "In program control keys:\n\n" .
     "   n - Next LP\n" .
     "   t - Next Track\n" .
+    "   m - Menu\n" .
     "   x - Exit\n" .
     "\n\n";
 
@@ -51,6 +53,30 @@ $first_lp = 0;
 @play_categories = ();
 @play_albums = ();
 
+my $RUN_DIR = $FindBin::Bin;
+my $playlist_file = "$RUN_DIR/landap.generated.playlist";
+my $current_album_file = "$RUN_DIR/landap.generated.current_album";
+my $resume_file = "$RUN_DIR/landap.generated.resume";
+my $menu_in_fifo = "$RUN_DIR/landap.generated.menu_in";
+my $menu_out_fifo = "$RUN_DIR/landap.generated.menu_out";
+
+#
+# Create menu FIFOs and start the standalone menu process.
+#
+for my $f ($menu_in_fifo, $menu_out_fifo) {
+    if (-e $f && !-p $f) {
+        unlink($f);
+    }
+    unless (-p $f) {
+        POSIX::mkfifo($f, 0666) or die "cannot create FIFO $f: $!\n";
+    }
+}
+
+my $menu_pid = fork;
+die "Failed to fork landap-menu\n" unless defined $menu_pid;
+if ($menu_pid == 0) {
+    exec("perl", "$FindBin::Bin/landap-menu") or die "exec landap-menu: $!\n";
+}
 
 
 #
@@ -182,6 +208,16 @@ while($run) {
       close(CUEFILE);
    }
 
+   #
+   # Write generated playlist for the menu.
+   #
+   if (open(my $pf, '>', $playlist_file)) {
+      for my $p (@play_albums) {
+         print $pf "$p\n";
+      }
+      close($pf);
+   }
+
    &play_albums(@play_albums);
 
    last if(defined($opt_p));
@@ -202,8 +238,39 @@ sub play_albums() {
    #
    while(1) {
    for ($ii = $first_lp; $ii <= $#albums; $ii++) {
-      print("Album Name: $albums[$ii]\n");
-      $play_album = $albums[$ii];
+      my $play_album = $albums[$ii];
+      my $use_resume = 0;
+      my $resume_offset = 0;
+
+      #
+      # Check for a resume request from the menu.
+      #
+      if (-e $resume_file) {
+         my ($ralbum, $roffset) = ('', 0);
+         if (open(my $rf, '<', $resume_file)) {
+            while (<$rf>) {
+               chomp;
+               if (/^album=(.+)/) {
+                  $ralbum = $1;
+               } elsif (/^offset=([0-9.]+)/) {
+                  $roffset = $1;
+               }
+            }
+            close($rf);
+         }
+         unlink($resume_file);
+         for my $j (0 .. $#albums) {
+            if ($albums[$j] eq $ralbum) {
+               $ii = $j;
+               $play_album = $albums[$j];
+               $use_resume = 1;
+               $resume_offset = $roffset;
+               last;
+            }
+         }
+      }
+
+      print("Album Name: $play_album\n");
 
       #
       # Does this album end with disk_<n>?
@@ -217,12 +284,24 @@ sub play_albums() {
 	 $play_album =~ s/$disc_num//;
       }
 
+      my ($files, $durations, $offsets, $total) = get_album_offsets($play_album);
+      my $start_offset = $resume_offset;
+      write_current_album($play_album, $start_offset, $files, $durations, $current_album_file);
+
+      my $cmd;
+      if ($use_resume) {
+         $cmd = build_resume_cmd($play_album, $resume_offset, $files, $durations);
+      }
+      unless (defined $cmd) {
+         $cmd = "play ${play_album}*/*.flac";
+      }
+
       unless(defined($opt_p)) {
 	 #
 	 # Fork off process to stream music.
 	 # Use <Album_Name>*/*.flac to catch all disc numbers.
 	 #
-	 $play_id = &print_run("play ${play_album}*/*.flac");
+	 $play_id = &print_run($cmd);
 
 	 #
 	 # Fork process to wait for user input
@@ -239,7 +318,7 @@ sub play_albums() {
 	 # Next lp will get a new input handler
 	 # (and a new PID to send signals)
 	 #
-	 killfam 9, $input_id;
+	 kill 9, $input_id;
 	 waitpid $input_id, 0;
       }
    }
@@ -263,8 +342,9 @@ sub input_handler() {
       #
       #
       # x = exit
-      # n = next album in queue (Need to fix for last album in queue)
-      # t = next track on album (Need to fix for last track of album)
+      # n = next album in queue
+      # t = next track on album
+      # m = menu
       #
       my $key_pressed = 'c';
       while(1) {
@@ -272,9 +352,7 @@ sub input_handler() {
 	 #
 	 # Child process - Wait for one key input.
 	 #
-	 ReadMode 'cbreak';
-	 $key_pressed = ReadKey(0);
-	 ReadMode 'normal';
+	 $key_pressed = read_key();
 
 	 if($key_pressed) {
 
@@ -283,33 +361,32 @@ sub input_handler() {
 	    #
 	    # x for exit. Kill parent process.
 	    #
-	    if($key_pressed eq 'x') {
+	    if($key_pressed eq 'x' || $key_pressed eq 'X') {
 
 	       print("Killing:$parent_id\n");
-	       killfam 9, $parent_id;
-	       waitpid($parent_id, 0);
+	       kill 9, -$play_id;
+	       kill 9, $parent_id;
 	       exit;
 	    }
 	    #
-	    # n for next album. Kill SoX process
+	    # n for next album. Kill SoX process group
 	    # Loop around and pick up next lp
 	    #
-	    elsif($key_pressed eq 'n') {
+	    elsif($key_pressed eq 'n' || $key_pressed eq 'N') {
 	       print("Next Album\n");
-	       killfam 9, $play_id;
-	       waitpid($play_id, 0);
+	       kill 9, -$play_id;
 	       exit;
 	    }
 	    #
 	    # Next track - send Ctrl-C to SoX to skip to next track.
 	    #
-	    elsif($key_pressed eq 't') {
+	    elsif($key_pressed eq 't' || $key_pressed eq 'T') {
 	       print("Next Track\n");
 
 	       #
-	       # Send Ctrl-C
+	       # Send Ctrl-C to the playback process group
 	       #
-	       killfam 2, $play_id;
+	       kill 2, -$play_id;
 
 	       #
 	       # Wait a little bit to prevent user from sending 2
@@ -317,6 +394,42 @@ sub input_handler() {
 	       # skips to next track
 	       # 
 	       Time::HiRes::usleep(1200);
+	    }
+	    #
+	    # m for menu
+	    #
+	    elsif($key_pressed eq 'm' || $key_pressed eq 'M') {
+	       if (open(my $mf, '>', $menu_in_fifo)) {
+          print $mf "show\n";
+          close($mf);
+       }
+       if (open(my $of, '<', $menu_out_fifo)) {
+          my $ralbum = '';
+          my $roffset = 0;
+          my $cancel = 0;
+          while (<$of>) {
+             chomp;
+             if (/^album=(.+)/) {
+                $ralbum = $1;
+             } elsif (/^offset=([0-9.]+)/) {
+                $roffset = $1;
+             } elsif (/^cancel=1/) {
+                $cancel = 1;
+             }
+          }
+          close($of);
+          if ($cancel) {
+             next;
+          }
+          if ($ralbum) {
+             if (open(my $rf, '>', $resume_file)) {
+                print $rf "album=$ralbum\noffset=$roffset\n";
+                close($rf);
+             }
+             kill 9, -$play_id;
+             exit;
+          }
+       }
 	    }
 	 }
       }
@@ -350,6 +463,7 @@ sub print_run() {
    #
    if($pid == 0) {
 
+      setpgrp(0, 0);
       system($cmd);
       exit;
    }
@@ -376,4 +490,55 @@ sub rand_array {
       splice(@array, $i, 1);
    }
    return @rand;
+}
+
+
+#
+# Terminal helpers and menu
+#
+sub set_raw {
+   system('stty', 'raw', '-echo', 'min', '1', 'time', '0');
+}
+
+sub restore_term {
+   system('stty', 'sane');
+}
+
+sub timed_read_byte {
+   my ($timeout) = @_;
+   my $rin = '';
+   vec($rin, fileno(STDIN), 1) = 1;
+   my $rout = $rin;
+   my $nfound = select($rout, undef, undef, $timeout);
+   return undef if $nfound <= 0;
+   my $c;
+   my $n = sysread(STDIN, $c, 1);
+   return undef unless $n;
+   return $c;
+}
+
+sub read_key {
+   set_raw();
+   my $c;
+   my $n = sysread(STDIN, $c, 1);
+   my $key = $c;
+   if ($n && $c eq "\e") {
+      my $c2 = timed_read_byte(0.1);
+      if (defined $c2 && $c2 eq '[') {
+         my $c3 = timed_read_byte(0.1);
+         if (defined $c3) {
+            if ($c3 eq 'A') { $key = 'UP'; }
+            elsif ($c3 eq 'B') { $key = 'DOWN'; }
+            elsif ($c3 eq 'C') { $key = 'RIGHT'; }
+            elsif ($c3 eq 'D') { $key = 'LEFT'; }
+            else { $key = 'ESC'; }
+         } else {
+            $key = 'ESC';
+         }
+      } else {
+         $key = 'ESC';
+      }
+   }
+   restore_term();
+   return $key;
 }

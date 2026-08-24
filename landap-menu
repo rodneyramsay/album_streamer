@@ -1,0 +1,430 @@
+#!/usr/bin/perl
+
+use FindBin;
+use lib "$FindBin::Bin/lib";
+use POSIX ();
+use IO::Select;
+use PIDAPAlbum qw(get_album_offsets read_current_album);
+
+my $RUN_DIR = $FindBin::Bin;
+my $playlist_file       = "$RUN_DIR/landap.generated.playlist";
+my $current_album_file  = "$RUN_DIR/landap.generated.current_album";
+my $menu_in_fifo        = "$RUN_DIR/landap.generated.menu_in";
+my $menu_out_fifo       = "$RUN_DIR/landap.generated.menu_out";
+
+$| = 1;
+
+for my $f ($menu_in_fifo, $menu_out_fifo) {
+    if (-e $f && !-p $f) {
+        unlink($f);
+    }
+    unless (-p $f) {
+        POSIX::mkfifo($f, 0666) or die "cannot create FIFO $f: $!\n";
+    }
+}
+
+sub set_raw {
+    system('stty', 'raw', '-echo', 'min', '1', 'time', '0');
+}
+
+sub restore_term {
+    system('stty', 'sane');
+}
+
+sub timed_read_byte {
+    my ($timeout) = @_;
+    my $rin = '';
+    vec($rin, fileno(STDIN), 1) = 1;
+    my $rout = $rin;
+    my $nfound = select($rout, undef, undef, $timeout);
+    return undef if $nfound <= 0;
+    my $c;
+    my $n = sysread(STDIN, $c, 1);
+    return undef unless $n;
+    return $c;
+}
+
+sub read_key {
+    set_raw();
+    my $c;
+    my $n = sysread(STDIN, $c, 1);
+    my $key = $c;
+    if ($n && $c eq "\e") {
+        my $c2 = timed_read_byte(0.1);
+        if (defined $c2 && $c2 eq '[') {
+            my $c3 = timed_read_byte(0.1);
+            if (defined $c3) {
+                if ($c3 eq 'A') { $key = 'UP'; }
+                elsif ($c3 eq 'B') { $key = 'DOWN'; }
+                elsif ($c3 eq 'C') { $key = 'RIGHT'; }
+                elsif ($c3 eq 'D') { $key = 'LEFT'; }
+                else { $key = 'ESC'; }
+            } else {
+                $key = 'ESC';
+            }
+        } else {
+            $key = 'ESC';
+        }
+    }
+    restore_term();
+    return $key;
+}
+
+sub enter_alt_screen {
+    print STDOUT "\e[?1049h\e[2J\e[H\e[?25l";
+}
+
+sub leave_alt_screen {
+    print STDOUT "\e[?25h\e[?1049l";
+}
+
+sub read_playlist_file {
+    my ($file) = @_;
+    my @paths = ();
+    if (open(my $pf, '<', $file)) {
+        while (<$pf>) {
+            chomp;
+            next unless $_;
+            if (m/^\s*(?:CUESHEET:\s*)?\d+\s+(.+)$/) {
+                push @paths, $1;
+            } elsif (m/^(.+)$/) {
+                push @paths, $1;
+            }
+        }
+        close($pf);
+    }
+    return @paths;
+}
+
+my $MENU_COLUMNS = 24;
+my $MENU_ITEM_MAX = $MENU_COLUMNS - 1;
+
+sub display_menu_list {
+    my ($title, $items_ref, $selected, $visible_lines) = @_;
+    $visible_lines ||= 13;
+    $selected = 0 if $selected < 0;
+    $selected = $#$items_ref if $selected > $#$items_ref;
+
+    my $total = scalar(@$items_ref);
+    my $item_lines = $visible_lines - ($title ? 1 : 0);
+    $item_lines = 1 if $item_lines < 1;
+
+    my $center_line = 7;
+    my $center_pos = $center_line - ($title ? 2 : 1);
+    $center_pos = 0 if $center_pos < 0;
+    $center_pos = $item_lines - 1 if $center_pos >= $item_lines;
+
+    my $top = 0;
+    if ($total > $item_lines) {
+        $top = $selected - $center_pos;
+        $top = 0 if $top < 0;
+        $top = $total - $item_lines if $top > $total - $item_lines;
+    }
+
+    my $title_max = $MENU_COLUMNS;
+    my $item_max = $MENU_ITEM_MAX;
+
+    print STDOUT "\e[H";
+    if ($title) {
+        my $t = (length($title) > $title_max) ? substr($title, 0, $title_max) : $title;
+        printf STDOUT "\e[32m%-*s\e[0m\n", $title_max, $t;
+    }
+    my $end = $top + $item_lines - 1;
+    for my $i ($top .. $end) {
+        my $item = ($i <= $#$items_ref) ? $items_ref->[$i] : '';
+        $item = substr($item, 0, $item_max) if length($item) > $item_max;
+        my $nl = ($i == $end) ? '' : "\n";
+        if ($i == $selected) {
+            printf STDOUT "\e[1m>%-*s\e[0m$nl", $item_max, $item;
+        } else {
+            printf STDOUT " %-*s$nl", $item_max, $item;
+        }
+    }
+}
+
+sub run_menu {
+    my ($albums_ref, $current_album_idx) = @_;
+
+    my @albums = @$albums_ref;
+    $current_album_idx = 0 if $current_album_idx < 0 || $current_album_idx > $#albums;
+
+    my ($current_album, $current_offset) = read_current_album($current_album_file);
+    $current_offset ||= 0;
+
+    # Group albums by parent directory (artist).
+    my %artist_paths;
+    my %artist_albums;
+    for my $i (0 .. $#albums) {
+        my $p = $albums[$i];
+        my $parent = ($p =~ m{^(.*)/[^/]+$}) ? $1 : '';
+        $artist_paths{$parent} = 1 if $parent;
+        push @{$artist_albums{$parent}}, $i;
+    }
+    my @artists = sort { (my $aa = $a) =~ s{^.*/}{}; (my $bb = $b) =~ s{^.*/}{}; $aa cmp $bb } keys %artist_paths;
+    my %artist_to_idx;
+    for my $i (0 .. $#artists) {
+        $artist_to_idx{$artists[$i]} = $i;
+    }
+    for my $artist (keys %artist_albums) {
+        $artist_albums{$artist} = [ sort { my $aa = $albums[$a]; $aa =~ s{^.*/}{}; my $bb = $albums[$b]; $bb =~ s{^.*/}{}; $aa cmp $bb } @{$artist_albums{$artist}} ];
+    }
+    my @artist_album_lists = map { $artist_albums{$_} } @artists;
+
+    # Group artists by parent directory (genre).
+    my %genre_paths;
+    my %genre_artists;
+    for my $artist (@artists) {
+        my $parent = ($artist =~ m{^(.*)/[^/]+$}) ? $1 : '';
+        $genre_paths{$parent} = 1 if $parent;
+        push @{$genre_artists{$parent}}, $artist;
+    }
+    my @genres = sort { (my $aa = $a) =~ s{^.*/}{}; (my $bb = $b) =~ s{^.*/}{}; $aa cmp $bb } keys %genre_paths;
+    for my $genre (keys %genre_artists) {
+        $genre_artists{$genre} = [ sort { (my $aa = $a) =~ s{^.*/}{}; (my $bb = $b) =~ s{^.*/}{}; $aa cmp $bb } @{$genre_artists{$genre}} ];
+    }
+    my @genre_artist_lists = map { $genre_artists{$_} } @genres;
+
+    my $current_genre_idx = 0;
+    my $current_artist_in_genre_idx = 0;
+    my $current_artist_idx = 0;
+    my $current_album_in_artist_idx = 0;
+    for my $gi (0 .. $#genres) {
+        my $artists_for = $genre_artist_lists[$gi];
+        for my $j (0 .. $#$artists_for) {
+            my $ai = $artist_to_idx{$artists_for->[$j]};
+            my $albums_for = $artist_album_lists[$ai];
+            for my $k (0 .. $#$albums_for) {
+                if ($albums_for->[$k] == $current_album_idx) {
+                    $current_genre_idx = $gi;
+                    $current_artist_in_genre_idx = $j;
+                    $current_artist_idx = $ai;
+                    $current_album_in_artist_idx = $k;
+                    last;
+                }
+            }
+        }
+    }
+
+    my ($track_files, $track_durations, $track_offsets);
+    my $current_track_idx = 0;
+    ($track_files, $track_durations, $track_offsets) = get_album_offsets($albums[$current_album_idx]);
+    if ($track_durations && @$track_durations) {
+        my $cum = 0;
+        for my $i (0 .. $#$track_durations) {
+            $cum += $track_durations->[$i];
+            if ($cum > $current_offset) {
+                $current_track_idx = $i;
+                last;
+            }
+        }
+    }
+
+    my $genre_idx = $current_genre_idx;
+    my $artist_in_genre_idx = $current_artist_in_genre_idx;
+    my $artist_idx = $current_artist_idx;
+    my $album_in_artist_idx = $current_album_in_artist_idx;
+    my $album_idx = $current_album_idx;
+    my $track_album_idx = $album_idx;
+    my $level = 3;
+    my $selected = $current_track_idx;
+    my @items;
+    my $title = '';
+    my $did_select = 0;
+
+    my $in_playlist = 0;
+    my $playlist_album_idx = $current_album_idx;
+    my $top_selected = $current_genre_idx + 1;
+
+    while (1) {
+        if ($level == 0) {
+            @items = ('Playlist', map { my $p = $_; $p =~ s{^.*/}{}; $p; } @genres);
+            if ($selected == 0) {
+                $title = 'Playlist';
+            } else {
+                $title = $genres[$selected - 1] // '';
+                $title =~ s{^.*/}{};
+            }
+        } elsif ($level == 1) {
+            my $artists_for = $genre_artist_lists[$genre_idx];
+            @items = map { my $p = $_; $p =~ s{^.*/}{}; $p; } @$artists_for;
+            $title = $genres[$genre_idx];
+            $title =~ s{^.*/}{};
+        } elsif ($level == 2) {
+            if ($in_playlist) {
+                my @albums_for = (0 .. $#albums);
+                @items = map { my $p = $albums[$_]; $p =~ s{^.*/}{}; $p; } @albums_for;
+                $title = 'Playlist';
+            } else {
+                my $albums_for = $artist_album_lists[$artist_idx];
+                @items = map { my $p = $albums[$_]; $p =~ s{^.*/}{}; $p; } @$albums_for;
+                $title = $artists[$artist_idx];
+                $title =~ s{^.*/}{};
+            }
+        } else {
+            if ($track_album_idx != $album_idx) {
+                my $album = $albums[$album_idx];
+                ($track_files, $track_durations, $track_offsets) = get_album_offsets($album);
+                $track_album_idx = $album_idx;
+            }
+            unless ($track_files && @$track_files) {
+                $level = 2;
+                $selected = $album_in_artist_idx;
+                next;
+            }
+            @items = map { my $f = $_; $f =~ s{^.*/}{}; $f; } @$track_files;
+            $title = $albums[$album_idx];
+            $title =~ s{^.*/}{};
+        }
+
+        &display_menu_list($title, \@items, $selected, 13);
+
+        my $key = read_key();
+        my $action = '';
+        if ($key eq 'UP' || $key eq 'a' || $key eq 'A') {
+            $action = 'up';
+        } elsif ($key eq 'DOWN' || $key eq 'b' || $key eq 'B') {
+            $action = 'down';
+        } elsif ($key eq 'RIGHT') {
+            $action = 'select';
+        } elsif ($key eq 'LEFT' || $key eq 'q' || $key eq 'Q' || $key eq 'ESC') {
+            $action = 'back';
+        }
+
+        next unless $action;
+
+        if ($action eq 'back') {
+            if ($level == 0) {
+                last;
+            } elsif ($level == 1) {
+                $level = 0;
+                $selected = $top_selected;
+                next;
+            } elsif ($level == 2) {
+                if ($in_playlist) {
+                    $level = 0;
+                    $selected = 0;
+                    $in_playlist = 0;
+                } else {
+                    $selected = $album_in_artist_idx;
+                    $level = 1;
+                }
+                next;
+            } elsif ($level == 3) {
+                if ($in_playlist) {
+                    $level = 2;
+                    $selected = $playlist_album_idx;
+                } else {
+                    $selected = $album_in_artist_idx;
+                    $level = 2;
+                }
+                next;
+            }
+        } elsif ($action eq 'up') {
+            $selected = ($selected > 0) ? $selected - 1 : $#items;
+        } elsif ($action eq 'down') {
+            $selected = ($selected < $#items) ? $selected + 1 : 0;
+        } elsif ($action eq 'select') {
+            if ($level == 0) {
+                if ($selected == 0) {
+                    $in_playlist = 1;
+                    $level = 2;
+                    $playlist_album_idx = $current_album_idx;
+                    $album_idx = $playlist_album_idx;
+                    $selected = $playlist_album_idx;
+                } else {
+                    $genre_idx = $selected - 1;
+                    $top_selected = $selected;
+                    $level = 1;
+                    $artist_in_genre_idx = ($genre_idx == $current_genre_idx) ? $current_artist_in_genre_idx : 0;
+                    $selected = $artist_in_genre_idx;
+                }
+            } elsif ($level == 1) {
+                $artist_in_genre_idx = $selected;
+                $artist_idx = $artist_to_idx{$genre_artist_lists[$genre_idx][$selected]};
+                $level = 2;
+                $album_in_artist_idx = ($artist_idx == $current_artist_idx) ? $current_album_in_artist_idx : 0;
+                $selected = $album_in_artist_idx;
+                $in_playlist = 0;
+            } elsif ($level == 2) {
+                if ($in_playlist) {
+                    $playlist_album_idx = $selected;
+                    $album_idx = $playlist_album_idx;
+                    $level = 3;
+                    $selected = ($albums[$album_idx] eq $current_album) ? $current_track_idx : 0;
+                } else {
+                    $album_in_artist_idx = $selected;
+                    $album_idx = $artist_album_lists[$artist_idx][$selected];
+                    $level = 3;
+                    if ($albums[$album_idx] eq $current_album) {
+                        $selected = $current_track_idx;
+                    } else {
+                        $selected = 0;
+                    }
+                }
+            } else {
+                $did_select = 1;
+                last;
+            }
+        }
+    }
+
+    if ($did_select) {
+        my $result_album = $albums[$album_idx];
+        my $result_offset = $track_offsets->[$selected] || 0;
+        return ($result_album, $result_offset);
+    }
+    return;
+}
+
+sub write_menu_result {
+    my ($album, $offset, $cancel) = @_;
+    if (open(my $out, '>', $menu_out_fifo)) {
+        if ($cancel) {
+            print $out "cancel=1\n";
+        } else {
+            print $out "album=$album\n";
+            print $out "offset=$offset\n";
+        }
+        close($out);
+    } else {
+        warn "cannot write $menu_out_fifo: $!\n";
+    }
+}
+
+open(MENU_IN, '+<', $menu_in_fifo) or die "cannot open $menu_in_fifo: $!\n";
+my $main_select = IO::Select->new(\*MENU_IN);
+
+while (1) {
+    my @ready = $main_select->can_read();
+    next unless @ready;
+    my $line = <MENU_IN>;
+    next unless defined $line;
+    chomp $line;
+    $line =~ s/^\s+|\s+$//g;
+    next unless $line eq 'show';
+
+    my @play_albums = read_playlist_file($playlist_file);
+    unless (@play_albums) {
+        write_menu_result('', 0, 1);
+        next;
+    }
+
+    my ($current_album, $current_offset) = read_current_album($current_album_file);
+    my $current_album_idx = 0;
+    for my $i (0 .. $#play_albums) {
+        if ($play_albums[$i] eq $current_album) {
+            $current_album_idx = $i;
+            last;
+        }
+    }
+
+    enter_alt_screen();
+    my ($result_album, $result_offset) = run_menu(\@play_albums, $current_album_idx);
+    leave_alt_screen();
+
+    if (defined $result_album) {
+        write_menu_result($result_album, $result_offset, 0);
+    } else {
+        write_menu_result('', 0, 1);
+    }
+}
