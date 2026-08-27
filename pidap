@@ -100,6 +100,11 @@ unlink($play_pid_file) if(-e $play_pid_file);
 
 my $boot_mode = $build_only ? &read_boot_gpio() : '';
 
+if ($ENV{PIDAP_NO_SYSTEMD} && !$build_only) {
+    &build_playlist();
+    &start_menu();
+}
+
 unless ($build_only) {
     &start_gpio_handler();
     &led_init();
@@ -214,6 +219,47 @@ sub start_gpio_handler() {
 
    print "GPIO handler pid: $pid\n";
    return $pid;
+}
+
+sub start_menu() {
+
+   my $handler = "$FindBin::Bin/pidap-menu";
+
+   unless(-r $handler) {
+      print "Warning: $handler not found, menu disabled\n";
+      return 0;
+   }
+
+   print "Forking menu handler: $handler\n";
+
+   my $pid = fork;
+   die "Failed to fork menu handler\n" unless defined $pid;
+
+   if($pid == 0) {
+      exec("perl", $handler) or die "Failed to exec $handler: $!\n";
+   }
+
+   print "Menu handler pid: $pid\n";
+   return $pid;
+}
+
+sub build_playlist() {
+
+   my $builder = "$FindBin::Bin/pidap-playlist";
+
+   unless(-r $builder) {
+      print "Warning: $builder not found\n";
+      return 0;
+   }
+
+   print "Building playlist: $builder\n";
+
+   my $rc = system("perl", $builder);
+   if ($rc != 0) {
+      print "Warning: $builder returned non-zero ($rc)\n";
+   }
+
+   return 1;
 }
 
 sub is_gpio_low {
