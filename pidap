@@ -604,263 +604,252 @@ sub find_play_child {
    return 0;
 }
 
-sub play_one_album {
- my ($play_album, $current_ii, $albums_ref, $volume_initialized_ref, $album_offsets_cache_ref, $menu_out_fh, $menu_out_sel) = @_;
- my @albums = @$albums_ref;
- unlink(qq#${RUN_DIR}/pidap.generated.restart#) if -e qq#${RUN_DIR}/pidap.generated.restart#;
- my ($files, $durations, $offsets, $total);
- if (exists $album_offsets_cache_ref->{$play_album}) {
-  ($files, $durations, $offsets, $total) = @{$album_offsets_cache_ref->{$play_album}};
- } else {
-  ($files, $durations, $offsets, $total) = &get_album_offsets($play_album);
-  $album_offsets_cache_ref->{$play_album} = [$files, $durations, $offsets, $total];
- }
- &led_flash();
- if (!$$volume_initialized_ref) {
-  if (!&set_initial_volume) {
-   &led_off;
-   return q#next#;
-  }
-  $$volume_initialized_ref = 1;
- }
- my $play_start_offset = 0;
- my $play_id = 0;
- my $cmd;
- if ($resume_album && $play_album eq $resume_album && $resume_offset > 0) {
-  $play_start_offset = $resume_offset;
-  &write_current_album($play_album, $resume_offset, $files, $durations, $current_album_file);
-  $cmd = &build_resume_cmd($play_album, $resume_offset, $files, $durations);
-  $first_lp = 0;
- } else {
-  $play_start_offset = 0;
-  &write_current_album($play_album, 0, $files, $durations, $current_album_file);
-  $cmd = &build_resume_cmd($play_album, 0, $files, $durations);
- }
- if ($cmd) {
-  my $track_idx = 0;
-  for my $i (0 .. $#$offsets) {
-   $track_idx = $i if $offsets->[$i] <= $play_start_offset;
-  }
-  print("%\n");
-  printf("Album: %s\nTrack: %d - %s\n", $play_album, $track_idx + 1, $files->[$track_idx]);
-  $play_id = &print_run($cmd);
- }
- $resume_album = q{};
- $resume_offset = 0;
- unlink($resume_file) if -e $resume_file;
- &led_off();
- &write_play_pid($play_id);
- my $do_previous = 0;
- my $do_restart = 0;
- my $do_menu_select = 0;
- if ($play_id > 0) {
-  my $start_time = Time::HiRes::time();
-  my $track_blink_until = 0;
-  my $next_offset_idx = 0;
-  for my $i (0 .. $#$offsets) {
-   last if $offsets->[$i] > $play_start_offset + 0.05;
-   $next_offset_idx = $i + 1;
-  }
-  if ($play_start_offset > 0.05) {
+sub start_playback {
+   my ($play_album, $play_start_offset, $files, $durations) = @_;
+   &write_current_album($play_album, $play_start_offset, $files, $durations, $current_album_file);
+   my $cmd = &build_resume_cmd($play_album, $play_start_offset, $files, $durations);
+   return 0 unless $cmd;
+   return &print_run($cmd);
+}
+
+sub resolve_previous_track {
+   my ($play_album, $play_start_offset, $album_time, $offsets, $current_ii, $albums_ref, $album_offsets_cache_ref) = @_;
+   unlink(qq#${RUN_DIR}/pidap.generated.previous_track#) if -e qq#${RUN_DIR}/pidap.generated.previous_track#;
+   my $track_idx = 0;
    for my $i (0 .. $#$offsets) {
-    if (abs($offsets->[$i] - $play_start_offset) < 0.05) {
-     &led_track_blink();
-     $track_blink_until = $start_time + 0.15;
-     last;
-    }
+      last if $offsets->[$i] > $album_time;
+      $track_idx = $i;
    }
-  }
-  my $paused = 0;
-  my $pause_start = 0;
-  my $total_pause_time = 0.0;
-  while ($play_id > 0) {
-   my $res = waitpid($play_id, WNOHANG);
-   if ($res == 0) {
-    if ($g_skip_track) {
-     $g_skip_track = 0;
-     if ($next_offset_idx <= $#$offsets) {
-      $resume_album = $play_album;
-      $resume_offset = $offsets->[$next_offset_idx];
-     } else {
-      my $next_ii = ($current_ii + 1) % @albums;
-      $resume_album = $albums[$next_ii];
-      $resume_offset = 0;
-     }
-     $do_restart = 1;
-     &led_track_blink();
-     $track_blink_until = Time::HiRes::time() + 0.15;
-     kill(9, -$play_id) if $play_id > 0;
-    } elsif ($g_prev_or_restart) {
-     $g_prev_or_restart = 0;
-     my $now = $g_prev_or_restart_time;
-     my $effective_pause = $total_pause_time + ($paused ? ($now - $pause_start) : 0);
-     my $album_time = $play_start_offset + ($now - $start_time - $effective_pause);
-     my $track_idx = 0;
-     for my $i (0 .. $#$offsets) {
-      last if $offsets->[$i] > $album_time;
-      $track_idx = $i;
-     }
-     my $track_start = $offsets->[$track_idx];
-     my $track_time = $album_time - $track_start;
-     if ($track_idx == 0 && $track_time <= 5) {
-      $do_previous = 1;
-     } else {
-      $do_restart = 1;
-      $resume_album = $play_album;
-      $resume_offset = 0;
-     }
-     print("DEBUG: B+Y track_idx=$track_idx track_time=$track_time do_previous=$do_previous do_restart=$do_restart\n") if $ENV{PIDAP_DEBUG};
-     kill(9, -$play_id) if $play_id > 0; 
-    } elsif (-e qq#${RUN_DIR}/pidap.generated.previous_track#) {
-     unlink(qq#${RUN_DIR}/pidap.generated.previous_track#);
-     my $now = Time::HiRes::time();
-     my $effective_pause = $total_pause_time + ($paused ? ($now - $pause_start) : 0);
-     my $album_time = $play_start_offset + ($now - $start_time - $effective_pause);
-     my $track_idx = 0;
-     for my $i (0 .. $#$offsets) {
-      last if $offsets->[$i] > $album_time;
-      $track_idx = $i;
-     }
-     my $track_start = $offsets->[$track_idx];
-     my $track_time = $album_time - $track_start;
-     if ($track_time > 5) {
+   my $track_start = $offsets->[$track_idx];
+   my $track_time = $album_time - $track_start;
+   if ($track_time > 5) {
       $resume_album = $play_album;
       $resume_offset = $track_start;
-     } elsif ($track_idx > 0) {
+   } elsif ($track_idx > 0) {
       $resume_offset = $offsets->[$track_idx - 1];
       $resume_album = $play_album;
-     } else {
-      my $prev_ii = ($current_ii - 1 + @albums) % @albums;
-      $resume_album = $albums[$prev_ii];
+   } else {
+      my $prev_ii = ($current_ii - 1 + @$albums_ref) % @$albums_ref;
+      $resume_album = $albums_ref->[$prev_ii];
       my $prev_entry;
-      if (exists $album_offsets_cache_ref->{$albums[$prev_ii]}) {
-         $prev_entry = $album_offsets_cache_ref->{$albums[$prev_ii]};
+      if (exists $album_offsets_cache_ref->{$albums_ref->[$prev_ii]}) {
+         $prev_entry = $album_offsets_cache_ref->{$albums_ref->[$prev_ii]};
       } else {
-         $prev_entry = [&get_album_offsets($albums[$prev_ii])];
-         $album_offsets_cache_ref->{$albums[$prev_ii]} = $prev_entry;
+         $prev_entry = [&get_album_offsets($albums_ref->[$prev_ii])];
+         $album_offsets_cache_ref->{$albums_ref->[$prev_ii]} = $prev_entry;
       }
       my $poff = $prev_entry->[2];
       $resume_offset = ($poff && @$poff) ? $poff->[-1] : 0;
-     }
-     $do_restart = 1;
-     print("DEBUG: previous_track track_idx=$track_idx track_time=$track_time resume_offset=$resume_offset resume_album=$resume_album\n") if $ENV{PIDAP_DEBUG};
-     kill(9, -$play_id);
-    } elsif (-e qq#${RUN_DIR}/pidap.generated.previous# || -e qq#${RUN_DIR}/pidap.generated.restart#) {
-     kill(9, -$play_id);
-    }
    }
-   last if $res > 0 || $res == -1;
-   my $now = Time::HiRes::time();
-   my $play_state = q#0#;
-   if (open(my $st, q#<#, qq#/proc/$play_id/status#)) {
-    while (<$st>) {
-     $play_state = $1 if /^State:\s*(\S)/;
-    }
-    close($st);
+   return 1;
+}
+
+sub monitor_playback {
+   my ($play_id, $play_start_offset, $play_album, $offsets, $current_ii, $albums_ref, $album_offsets_cache_ref, $sel, $menu_out_fh, $pause_fh) = @_;
+   my @albums = @$albums_ref;
+   my $start_time = Time::HiRes::time();
+   my $track_blink_until = 0;
+   my $next_offset_idx = 0;
+   my $POLL = $ENV{PIDAP_MONITOR_POLL} || 0.5;
+   for my $i (0 .. $#$offsets) {
+      last if $offsets->[$i] > $play_start_offset + 0.05;
+      $next_offset_idx = $i + 1;
    }
-   if ($play_state eq q#T# && !$paused) {
-    $paused = 1;
-    $pause_start = $now;
-   } elsif ($play_state ne q#T# && $paused) {
-    $paused = 0;
-    $total_pause_time += ($now - $pause_start);
-   }
-   my $effective_pause = $total_pause_time + ($paused ? ($now - $pause_start) : 0);
-   my $album_time = $play_start_offset + ($now - $start_time - $effective_pause);
-   if ($track_blink_until && $now >= $track_blink_until) {
-    &led_off();
-    $track_blink_until = 0;
-   }
-   my $did_menu_read = 0;
-   if ($menu_out_sel) {
-    my @ready = $menu_out_sel->can_read(0.1);
-    if (@ready) {
-     my $line = <$menu_out_fh>;
-     if (defined $line) {
-      $did_menu_read = 1;
-      chomp $line;
-      my $next_line = <$menu_out_fh>;
-      if ($line =~ /^album=(.+)/) {
-       $resume_album = $1;
-       $resume_offset = 0;
-       if (defined $next_line && $next_line =~ /^offset=([0-9.]+)/) {
-        $resume_offset = $1;
-       }
-       $do_menu_select = 1;
-       print("DEBUG: menu result album=$resume_album offset=$resume_offset\n") if $ENV{PIDAP_DEBUG};
-       kill(9, -$play_id) if $play_id > 0;
-      } elsif ($line =~ /^cancel=1/) {
-       # ignore
+   if ($play_start_offset > 0.05) {
+      for my $i (0 .. $#$offsets) {
+         if (abs($offsets->[$i] - $play_start_offset) < 0.05) {
+            &led_track_blink();
+            $track_blink_until = $start_time + 0.15;
+            last;
+         }
       }
-     }
-    }
    }
-   Time::HiRes::usleep(100_000) unless $did_menu_read;
-  }
-
-  # Catch a previous_track request that arrived after the play process died,
-  # so pidap_buttons B+X / X+B does not accidentally fall through to next album.
-  if (-e qq#${RUN_DIR}/pidap.generated.previous_track#) {
-     unlink(qq#${RUN_DIR}/pidap.generated.previous_track#);
-     my $now = Time::HiRes::time();
-     my $effective_pause = $total_pause_time + ($paused ? ($now - $pause_start) : 0);
-     my $album_time = $play_start_offset + ($now - $start_time - $effective_pause);
-     my $track_idx = 0;
-     for my $i (0 .. $#$offsets) {
-        last if $offsets->[$i] > $album_time;
-        $track_idx = $i;
-     }
-     my $track_start = $offsets->[$track_idx];
-     my $track_time = $album_time - $track_start;
-     if ($track_time > 5) {
-        $resume_album = $play_album;
-        $resume_offset = $track_start;
-     } elsif ($track_idx > 0) {
-        $resume_offset = $offsets->[$track_idx - 1];
-        $resume_album = $play_album;
-     } else {
-        my $prev_ii = ($current_ii - 1 + @albums) % @albums;
-        $resume_album = $albums[$prev_ii];
-        my $prev_entry;
-        if (exists $album_offsets_cache_ref->{$albums[$prev_ii]}) {
-           $prev_entry = $album_offsets_cache_ref->{$albums[$prev_ii]};
-        } else {
-           $prev_entry = [&get_album_offsets($albums[$prev_ii])];
-           $album_offsets_cache_ref->{$albums[$prev_ii]} = $prev_entry;
-        }
-        my $poff = $prev_entry->[2];
-        $resume_offset = ($poff && @$poff) ? $poff->[-1] : 0;
-     }
-     $do_restart = 1;
-  }
-
-  &led_off();
- }
- print("DEBUG: before return do_previous=$do_previous do_restart=$do_restart\n") if $ENV{PIDAP_DEBUG};
- return q#next# if $do_menu_select;
- if ($do_previous || -e qq#${RUN_DIR}/pidap.generated.previous#) {
-  unlink(qq#${RUN_DIR}/pidap.generated.previous#) if -e qq#${RUN_DIR}/pidap.generated.previous#;
-  return q#prev#;
- }
- if ($do_restart || -e qq#${RUN_DIR}/pidap.generated.restart#) {
-  my $restart_offset = 0;
-  if (-e qq#${RUN_DIR}/pidap.generated.restart#) {
-   if (open(my $rf, q#<#, qq#${RUN_DIR}/pidap.generated.restart#)) {
-    while (<$rf>) {
-     chomp;
-     $restart_offset = $1 if (/^offset=([0-9.]+)/);
-    }
-    close($rf);
+   my $paused = 0;
+   my $pause_start = 0;
+   my $total_pause_time = 0.0;
+   my $do_previous = 0;
+   my $do_restart = 0;
+   my $do_menu_select = 0;
+   while ($play_id > 0) {
+      my $res = waitpid($play_id, WNOHANG);
+      if ($res == 0) {
+         if ($g_skip_track) {
+            $g_skip_track = 0;
+            if ($next_offset_idx <= $#$offsets) {
+               $resume_album = $play_album;
+               $resume_offset = $offsets->[$next_offset_idx];
+            } else {
+               my $next_ii = ($current_ii + 1) % @albums;
+               $resume_album = $albums[$next_ii];
+               $resume_offset = 0;
+            }
+            $do_restart = 1;
+            &led_track_blink();
+            $track_blink_until = Time::HiRes::time() + 0.15;
+            kill(9, -$play_id) if $play_id > 0;
+         } elsif ($g_prev_or_restart) {
+            $g_prev_or_restart = 0;
+            my $now = $g_prev_or_restart_time;
+            my $effective_pause = $total_pause_time + ($paused ? ($now - $pause_start) : 0);
+            my $album_time = $play_start_offset + ($now - $start_time - $effective_pause);
+            my $track_idx = 0;
+            for my $i (0 .. $#$offsets) {
+               last if $offsets->[$i] > $album_time;
+               $track_idx = $i;
+            }
+            my $track_start = $offsets->[$track_idx];
+            my $track_time = $album_time - $track_start;
+            if ($track_idx == 0 && $track_time <= 5) {
+               $do_previous = 1;
+            } else {
+               $do_restart = 1;
+               $resume_album = $play_album;
+               $resume_offset = 0;
+            }
+            print("DEBUG: B+Y track_idx=$track_idx track_time=$track_time do_previous=$do_previous do_restart=$do_restart\n") if $ENV{PIDAP_DEBUG};
+            kill(9, -$play_id) if $play_id > 0;
+         } elsif (-e qq#${RUN_DIR}/pidap.generated.previous_track#) {
+            my $now = Time::HiRes::time();
+            my $effective_pause = $total_pause_time + ($paused ? ($now - $pause_start) : 0);
+            my $album_time = $play_start_offset + ($now - $start_time - $effective_pause);
+            my $track_idx = 0;
+            for my $i (0 .. $#$offsets) {
+               last if $offsets->[$i] > $album_time;
+               $track_idx = $i;
+            }
+            my $track_start = $offsets->[$track_idx];
+            my $track_time = $album_time - $track_start;
+            $do_restart = &resolve_previous_track($play_album, $play_start_offset, $album_time, $offsets, $current_ii, $albums_ref, $album_offsets_cache_ref);
+            print("DEBUG: previous_track track_idx=$track_idx track_time=$track_time resume_offset=$resume_offset resume_album=$resume_album\n") if $ENV{PIDAP_DEBUG};
+            kill(9, -$play_id);
+         } elsif (-e qq#${RUN_DIR}/pidap.generated.previous# || -e qq#${RUN_DIR}/pidap.generated.restart#) {
+            kill(9, -$play_id);
+         }
+      }
+      last if $res > 0 || $res == -1;
+      my $now = Time::HiRes::time();
+      if ($track_blink_until && $now >= $track_blink_until) {
+         &led_off();
+         $track_blink_until = 0;
+      }
+      my $consumed = 0;
+      if ($sel) {
+         my @ready = $sel->can_read($POLL);
+         for my $fh (@ready) {
+            if (fileno($fh) == fileno($menu_out_fh)) {
+               my $line = <$menu_out_fh>;
+               if (defined $line) {
+                  $consumed = 1;
+                  chomp $line;
+                  my $next_line = <$menu_out_fh>;
+                  if ($line =~ /^album=(.+)/) {
+                     $resume_album = $1;
+                     $resume_offset = 0;
+                     if (defined $next_line && $next_line =~ /^offset=([0-9.]+)/) {
+                        $resume_offset = $1;
+                     }
+                     $do_menu_select = 1;
+                     print("DEBUG: menu result album=$resume_album offset=$resume_offset\n") if $ENV{PIDAP_DEBUG};
+                     kill(9, -$play_id) if $play_id > 0;
+                  } elsif ($line =~ /^cancel=1/) {
+                     # ignore
+                  }
+               }
+            } elsif (fileno($fh) == fileno($pause_fh)) {
+               my $line = <$pause_fh>;
+               if (defined $line) {
+                  chomp $line;
+                  if ($line =~ /^pause=([01])/) {
+                     $consumed = 1;
+                     if ($1 && !$paused) {
+                        $paused = 1;
+                        $pause_start = Time::HiRes::time();
+                     } elsif (!$1 && $paused) {
+                        $paused = 0;
+                        $total_pause_time += (Time::HiRes::time() - $pause_start);
+                     }
+                  }
+               }
+            }
+         }
+      }
+      Time::HiRes::usleep($POLL * 1_000_000) unless $consumed;
    }
-   unlink(qq#${RUN_DIR}/pidap.generated.restart#);
-  }
-  if ($restart_offset > 0) {
-   $resume_album = $play_album;
-   $resume_offset = $restart_offset;
-  }
-  return q#restart#;
- }
- return q#next#;
+
+   # Catch a previous_track request that arrived after the play process died,
+   # so pidap_buttons B+X / X+B does not accidentally fall through to next album.
+   if (-e qq#${RUN_DIR}/pidap.generated.previous_track#) {
+      my $now = Time::HiRes::time();
+      my $effective_pause = $total_pause_time + ($paused ? ($now - $pause_start) : 0);
+      my $album_time = $play_start_offset + ($now - $start_time - $effective_pause);
+      $do_restart = &resolve_previous_track($play_album, $play_start_offset, $album_time, $offsets, $current_ii, $albums_ref, $album_offsets_cache_ref);
+   }
+
+   &led_off();
+   return ($do_previous, $do_restart, $do_menu_select);
+}
+
+sub play_one_album {
+   my ($play_album, $current_ii, $albums_ref, $volume_initialized_ref, $album_offsets_cache_ref, $sel, $menu_out_fh, $pause_fh) = @_;
+   unlink(qq#${RUN_DIR}/pidap.generated.restart#) if -e qq#${RUN_DIR}/pidap.generated.restart#;
+   my ($files, $durations, $offsets, $total);
+   if (exists $album_offsets_cache_ref->{$play_album}) {
+      ($files, $durations, $offsets, $total) = @{$album_offsets_cache_ref->{$play_album}};
+   } else {
+      ($files, $durations, $offsets, $total) = &get_album_offsets($play_album);
+      $album_offsets_cache_ref->{$play_album} = [$files, $durations, $offsets, $total];
+   }
+   &led_flash();
+   if (!$$volume_initialized_ref) {
+      if (!&set_initial_volume) {
+         &led_off;
+         return q#next#;
+      }
+      $$volume_initialized_ref = 1;
+   }
+   my $play_start_offset = 0;
+   if ($resume_album && $play_album eq $resume_album && $resume_offset > 0) {
+      $play_start_offset = $resume_offset;
+      $first_lp = 0;
+   }
+   my $play_id = &start_playback($play_album, $play_start_offset, $files, $durations);
+   $resume_album = q{};
+   $resume_offset = 0;
+   unlink($resume_file) if -e $resume_file;
+   &led_off();
+   &write_play_pid($play_id);
+   my $do_previous = 0;
+   my $do_restart = 0;
+   my $do_menu_select = 0;
+   if ($play_id > 0) {
+      ($do_previous, $do_restart, $do_menu_select) =
+         &monitor_playback($play_id, $play_start_offset, $play_album, $offsets, $current_ii, $albums_ref, $album_offsets_cache_ref, $sel, $menu_out_fh, $pause_fh);
+   }
+   print("DEBUG: before return do_previous=$do_previous do_restart=$do_restart\n") if $ENV{PIDAP_DEBUG};
+   return q#next# if $do_menu_select;
+   if ($do_previous || -e qq#${RUN_DIR}/pidap.generated.previous#) {
+      unlink(qq#${RUN_DIR}/pidap.generated.previous#) if -e qq#${RUN_DIR}/pidap.generated.previous#;
+      return q#prev#;
+   }
+   if ($do_restart || -e qq#${RUN_DIR}/pidap.generated.restart#) {
+      my $restart_offset = 0;
+      if (-e qq#${RUN_DIR}/pidap.generated.restart#) {
+         if (open(my $rf, q#<#, qq#${RUN_DIR}/pidap.generated.restart#)) {
+            while (<$rf>) {
+               chomp;
+               $restart_offset = $1 if (/^offset=([0-9.]+)/);
+            }
+            close($rf);
+         }
+         unlink(qq#${RUN_DIR}/pidap.generated.restart#);
+      }
+      if ($restart_offset > 0) {
+         $resume_album = $play_album;
+         $resume_offset = $restart_offset;
+      }
+      return q#restart#;
+   }
+   return q#next#;
 }
 
 sub play_albums() {
@@ -869,7 +858,19 @@ sub play_albums() {
  my %album_offsets_cache = ();
  my $menu_out_fh;
  sysopen($menu_out_fh, "$RUN_DIR/pidap.generated.menu_out", O_RDWR|O_NONBLOCK) or warn "cannot open menu_out FIFO: $!";
- my $menu_out_sel = IO::Select->new($menu_out_fh) if defined $menu_out_fh;
+ my $pause_fh;
+ my $pause_fifo = "$RUN_DIR/pidap.generated.pause";
+ if (-e $pause_fifo && !-p $pause_fifo) {
+     unlink($pause_fifo);
+ }
+ unless (-p $pause_fifo) {
+     POSIX::mkfifo($pause_fifo, 0666) or warn "cannot create pause FIFO $pause_fifo: $!";
+ }
+ sysopen($pause_fh, $pause_fifo, O_RDWR|O_NONBLOCK) or warn "cannot open pause FIFO: $!";
+ my $sel;
+ if (defined $menu_out_fh && defined $pause_fh) {
+     $sel = IO::Select->new($menu_out_fh, $pause_fh);
+ }
 
  # Resume from the actual last-played album if we can find it in
  # the current playlist.  A stale place index (from an old playlist)
@@ -904,7 +905,7 @@ sub play_albums() {
   }
   print("Album Name($ii): $albums[$ii]\n");
   &write_place_file($place_file, $ii);
-  my $action = &play_one_album($albums[$ii], $ii, \@albums, \$volume_initialized, \%album_offsets_cache, $menu_out_fh, $menu_out_sel);
+  my $action = &play_one_album($albums[$ii], $ii, \@albums, \$volume_initialized, \%album_offsets_cache, $sel, $menu_out_fh, $pause_fh);
   if ($action eq q#prev#) {
    if ($ii > 0) { $ii--; } else { $ii = $#albums; }
   } elsif ($action eq q#restart#) {
