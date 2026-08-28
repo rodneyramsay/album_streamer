@@ -19,6 +19,7 @@ my $MENU_HOLD_SEC = $ENV{PIDAP_MENU_HOLD_SEC} || 1.5;
 my $FALL_DEBOUNCE = $ENV{PIDAP_FALL_DEBOUNCE} || 0.15;
 my $RISE_DEBOUNCE = $ENV{PIDAP_RISE_DEBOUNCE} || 0.10;
 my $MIN_PRESS_SEC = $ENV{PIDAP_MIN_PRESS_SEC} || 0.05;
+my $BUTTON_POLL = $ENV{PIDAP_BUTTON_POLL} || 0.25;
 my $GPIO_CHIP = $ENV{PIDAP_GPIO_CHIP} || '';
 
 my @BUTTONS = (5, 6, 16, 24);
@@ -290,12 +291,25 @@ sub toggle_pause {
         log_msg('No play process, cannot toggle pause');
         return;
     }
+    my $pause_fifo = get_flag_file('pidap.generated.pause');
     if (is_play_paused($pid)) {
         log_msg('Resuming playback');
         killfam('CONT', $pid);
+        if (open(my $pf, '>', $pause_fifo)) {
+            print $pf "pause=0\n";
+            close($pf);
+        } else {
+            log_msg("Could not write pause=0 to $pause_fifo: $!");
+        }
     } else {
         log_msg('Pausing playback');
         killfam('STOP', $pid);
+        if (open(my $pf, '>', $pause_fifo)) {
+            print $pf "pause=1\n";
+            close($pf);
+        } else {
+            log_msg("Could not write pause=1 to $pause_fifo: $!");
+        }
     }
 }
 
@@ -837,7 +851,7 @@ while (1) {
     check_lock_timeout();
     check_menu_state();
     check_menu_repeat();
-    check_gpiomon_events($sel, 0.05);
+    check_gpiomon_events($sel, $BUTTON_POLL);
     check_play_pid();
     check_backlight_timeout();
 }
