@@ -1,0 +1,52 @@
+#!/usr/bin/perl
+
+use FindBin;
+
+my ($last_artist, $last_album, $last_track);
+
+while(<>) {
+    #
+    # Only work on lines with the file name
+    #
+    if(m/\//) {
+
+	#
+	# Pull out Artist, Album, Track Name
+	#
+ 	if(m/\/([^\/]+)\/([^\/]+)\/([^\/]+)\:\s*$/) {
+	    my ($artist, $album, $track) = ($1, $2, $3);
+            $track =~ s/\.(?:flac|mp3|ogg|m4a|wav|gsm|amr)$//i;
+
+            next if ($artist eq ($last_artist // '')
+                  && $album  eq ($last_album  // '')
+                  && $track  eq ($last_track  // ''));
+
+	    my $RUN_DIR = $ENV{PIDAP_RUN_DIR} || $FindBin::Bin;
+	    my $playlist = "$RUN_DIR/pidap.generated.playlist";
+	    $cue = `grep -s '\/${album}' "$playlist" 2>/dev/null`;
+	    if($cue =~ m/\s+(\d+)/) {
+		$cue_num = $1;
+	    }
+
+            $last = `tail -1 "$playlist" 2>/dev/null`;
+	    if($last =~ m/\s+(\d+)/) {
+		$last_num = $1;
+	    }
+
+            ($last_artist, $last_album, $last_track) = ($artist, $album, $track);
+
+	    print "\n";
+	    print "$artist\n";
+	    print "${cue_num}\/${last_num}: ${album}\n";
+	    print "$track\n";
+
+	    if (open(my $df, '>', "$RUN_DIR/pidap.generated.display")) {
+	        print $df "\n$artist\n";
+	        print $df "${cue_num}\/${last_num}: ${album}\n";
+	        print $df "$track\n";
+	        close($df);
+	    }
+	}
+    }
+}
+    

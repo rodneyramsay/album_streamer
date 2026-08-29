@@ -1,0 +1,4 @@
+#!/bin/sh
+# Open the default (softvol) PCM briefly so the "Amp" control is created.
+# This makes the volume visible to amixer/alsamixer before pidap starts.
+exec aplay -D default -d 1 -q -f cd /dev/zero

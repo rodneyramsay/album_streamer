@@ -104,10 +104,10 @@ sub start_gpiomon {
     }
     my @cmd = (
         'gpiomon',
-        '-c', 'gpiochip0',
-        '--format=%o %E',
-        '--bias=pull-up',
-        '--edges=both',
+        '-B', 'pull-up',
+        '-F', '%o %e',
+        '-b',
+        'gpiochip0',
         @BUTTONS,
     );
     log_msg('Starting gpiomon: ' . join(' ', @cmd));
@@ -134,6 +134,10 @@ sub check_gpiomon_events {
             next if $line =~ /^\s*$/;
             my ($pin, $edge) = split(/\s+/, $line, 2);
             next unless defined $pin && defined $edge;
+            # libgpiod 1.x prints %e as 0/1; map to the names the rest of
+            # the code expects.
+            $edge = 'falling' if $edge eq '0';
+            $edge = 'rising'  if $edge eq '1';
             next unless exists $PIN_TO_LABEL{$pin};
             my $now = Time::HiRes::time();
             if ($edge eq 'falling' && $now - ($last_fall{$pin} || 0) < $FALL_DEBOUNCE) {

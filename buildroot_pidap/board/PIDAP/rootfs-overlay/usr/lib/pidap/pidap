@@ -63,6 +63,7 @@ my $RUN_DIR = $ENV{PIDAP_RUN_DIR} || $FindBin::Bin;
 if ($ENV{PIDAP_RUN_DIR} && !-d $RUN_DIR) {
    system('mkdir', '-p', $RUN_DIR) == 0 or die "cannot create $RUN_DIR: $!";
 }
+$ENV{PIDAP_RUN_DIR} = $RUN_DIR;
 
 $playlist_file = "$FindBin::Bin/pidap.generated.playlist";
 $place_file = "$FindBin::Bin/pidap.generated.place";
@@ -513,8 +514,8 @@ sub set_initial_volume {
       $attempt++;
    }
 
-   print("Warning: could not set initial volume to ${initial}%\n");
-   return 0;
+   print("Warning: could not set initial volume to ${initial}%, continuing anyway\n");
+   return 1;
 }
 
 
@@ -943,7 +944,8 @@ sub print_run() {
       #
       # Send sox play output to the TFT console.
       #
-      open(STDOUT, '>', '/dev/tty1') or die "Can't open /dev/tty1: $!\n";
+      open(STDOUT, '>', '/dev/tty1') or open(STDOUT, '>', '/dev/null')
+          or die "Can't open stdout: $!\n";
       open(STDERR, '>&STDOUT') or die "Can't dup STDOUT to STDERR: $!\n";
 
       #

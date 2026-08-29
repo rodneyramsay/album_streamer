@@ -256,7 +256,7 @@ def main():
             bad(f"{name} not in PATH", f"install /usr/bin/{name} or add to PATH")
             failures += 1
 
-    services = ["pidap-menu", "pidap-playlist", "pidap-buttons"]
+    services = ["pidap"]
     for s in services:
         if exists(f"/etc/systemd/system/{s}.service"):
             good(f"{s}.service installed")
@@ -265,6 +265,41 @@ def main():
         else:
             bad(f"{s} service not found", f"install {s}.service or init script")
             failures += 1
+
+    # pidap runtime
+    section("pidap runtime")
+    for proc in ["pidap", "pidap-menu", "pidap-buttons"]:
+        ok, _ = run(f"pgrep -f '{proc}' 2>/dev/null")
+        if ok:
+            good(f"{proc} is running")
+        else:
+            bad(f"{proc} is not running", f"start /etc/init.d/S99pidap")
+            failures += 1
+
+    play_ok, _ = run("pgrep -f 'sox|play' 2>/dev/null")
+    if play_ok:
+        good("audio playback (sox/play) is running")
+    else:
+        bad("no audio playback process", "check /tmp/pidap*.log and /usr/lib/pidap/pidap")
+        failures += 1
+
+    if exists("/usr/lib/pidap/filter_output"):
+        good("filter_output present")
+    else:
+        bad("filter_output missing", "install /usr/lib/pidap/filter_output")
+        failures += 1
+
+    if exists("/tmp/pidap_buttons.log"):
+        with open("/tmp/pidap_buttons.log") as f:
+            log = f.read()
+        if "Using pidap PID from parent" in log:
+            good("pidap-buttons attached to pidap")
+        else:
+            bad("pidap-buttons not attached", "check gpiomon and pidap parent")
+            failures += 1
+    else:
+        bad("pidap_buttons.log missing", "pidap-buttons has not started")
+        failures += 1
 
     # User data / music
     section("User data")
