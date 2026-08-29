@@ -1,0 +1,4 @@
+# Clear out any default restrictions and explicitly configure permissions
+# <path>                    <type> <mode> <uid> <gid> <major> <minor> <start> <inc> <count>
+/usr/local                  d      775    0     0     -       -       -       -     -
+/usr/local/Music            d      775    0     0     -       -       -       -     -

@@ -13,6 +13,12 @@ if [ ! -e "${GENIMAGE_CFG}" ]; then
 	FILES=()
 
 	for i in "${BINARIES_DIR}"/*.dtb "${BINARIES_DIR}"/rpi-firmware/*; do
+		[ -e "$i" ] || continue
+		FILES+=( "${i#${BINARIES_DIR}/}" )
+	done
+
+	for i in "${BINARIES_DIR}"/rpi-firmware/overlays/*; do
+		[ -f "$i" ] || continue
 		FILES+=( "${i#${BINARIES_DIR}/}" )
 	done
 
@@ -31,6 +37,11 @@ fi
 
 trap 'rm -rf "${ROOTPATH_TMP}"' EXIT
 ROOTPATH_TMP="$(mktemp -d)"
+
+# Create the writable /usr/local music partition image
+FAKEROOT="${HOST_DIR:-}/bin/fakeroot"
+[ -x "${FAKEROOT}" ] || FAKEROOT="fakeroot"
+"${FAKEROOT}" -- "${BOARD_DIR}/mkuserimg.sh"
 
 rm -rf "${GENIMAGE_TMP}"
 

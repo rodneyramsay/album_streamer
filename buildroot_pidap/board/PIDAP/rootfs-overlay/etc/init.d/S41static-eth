@@ -1,0 +1,20 @@
+#!/bin/sh
+#
+# Bring up the USB ethernet with a hard-coded address.
+# Runs after ifupdown (S40) so it always wins.
+#
+
+case "$1" in
+    start)
+        for i in $(seq 1 30); do
+            if [ -e /sys/class/net/eth0 ]; then
+                ifconfig eth0 192.168.0.31 netmask 255.255.0.0 up
+                exit 0
+            fi
+            sleep 1
+        done
+        echo "S41static-eth: eth0 did not appear" >&2
+        ;;
+    *)
+        ;;
+esac

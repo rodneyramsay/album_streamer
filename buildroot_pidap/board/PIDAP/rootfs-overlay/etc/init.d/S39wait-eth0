@@ -1,0 +1,20 @@
+#!/bin/sh
+#
+# Wait for the USB ethernet adapter to appear before S40network runs.
+# The Pi Zero USB ethernet can take a few seconds to enumerate.
+#
+
+case "$1" in
+    start)
+        for i in $(seq 1 20); do
+            if [ -e /sys/class/net/eth0 ]; then
+                echo "eth0 ready" >/dev/null
+                exit 0
+            fi
+            sleep 1
+        done
+        echo "S39wait-eth0: eth0 did not appear" >&2
+        ;;
+    *)
+        ;;
+esac

@@ -1,4 +1,8 @@
 # /etc/inittab - Startup script for BusyBox init
+# Mount proc first so rcS and other tools can use it
+::sysinit:/bin/mount -t proc proc /proc
+::sysinit:/bin/mount -o remount,rw /
+
 ::sysinit:/etc/init.d/rcS
 
 # Launch consoles (HDMI and Serial)
@@ -8,4 +12,3 @@ ttyAMA0::respawn:/sbin/getty -L ttyAMA0 115200 vt100
 # Standard actions
 ::shutdown:/bin/umount -a -r
 ::restart:/sbin/init
-

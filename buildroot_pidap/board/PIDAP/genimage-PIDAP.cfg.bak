@@ -16,6 +16,6 @@ image sdcard.img {
     # 🛠 Your writeable user partition for Perl scripts & Music
     partition user-data {
         partition-type = 0x83
-        size = 2G # Adjust this based on your development SD card size
+        image = "user-data.ext4"
     }
 }

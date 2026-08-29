@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+"""
+Run this on the target to verify the PIDAP rootfs overlay and hardware
+environment are present after boot.
+
+Example:
+    pidap-env-check
+"""
+
+import glob
+import os
+import re
+import subprocess
+import sys
+
+
+def section(title):
+    print(f"\n--- {title} ---")
+
+
+def good(msg):
+    print(f"  [OK]   {msg}")
+
+
+def bad(msg, advice=""):
+    print(f"  [FAIL] {msg}")
+    if advice:
+        print(f"         -> {advice}")
+
+
+def exists(path):
+    return os.path.exists(path)
+
+
+def run(cmd, timeout=10):
+    try:
+        result = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True, timeout=timeout
+        )
+        return (result.returncode == 0, result.stdout.strip())
+    except FileNotFoundError:
+        return (False, "")
+    except subprocess.TimeoutExpired:
+        return (False, "timeout")
+
+
+def has_command(name):
+    success, _ = run(f"command -v {name} >/dev/null")
+    return success
+
+
+def main():
+    print("PIDAP target environment check")
+    failures = 0
+
+    # Overlay rootfs files
+    section("Rootfs overlay files")
+    expected = [
+        "/etc/fstab",
+        "/etc/inittab",
+        "/etc/network/interfaces",
+        "/etc/ssh/sshd_config",
+        "/etc/asound.conf",
+    ]
+    for path in expected:
+        if exists(path):
+            good(path)
+        else:
+            bad(path, "missing from overlay; rebuild rootfs")
+            failures += 1
+
+    # Boot config (only visible if boot partition is mounted)
+    section("Boot firmware")
+    if exists("/boot/config.txt"):
+        good("/boot/config.txt present")
+    else:
+        bad("/boot/config.txt not found", "boot partition may not be mounted")
+        failures += 1
+
+    # OS identity
+    section("OS / build identity")
+    if exists("/usr/lib/os-release"):
+        with open("/usr/lib/os-release") as f:
+            for line in f:
+                if line.startswith("PRETTY_NAME=") or line.startswith("VERSION="):
+                    print(f"  {line.strip()}")
+
+    # ALSA / audio
+    section("ALSA audio")
+    if exists("/dev/snd"):
+        good("/dev/snd exists")
+    else:
+        bad("/dev/snd missing", "check dtparam=audio / I2S / DAC overlays")
+        failures += 1
+
+    if exists("/proc/asound/cards"):
+        with open("/proc/asound/cards") as f:
+            text = f.read().strip()
+        if text:
+            good("sound cards detected")
+            for line in text.splitlines():
+                print(f"         {line.rstrip()}")
+        else:
+            bad("/proc/asound/cards is empty", "audio kernel module not loaded")
+            failures += 1
+    else:
+        bad("/proc/asound/cards missing", "ALSA not in kernel?")
+        failures += 1
+
+    if has_command("aplay"):
+        success, out = run("aplay -l", timeout=5)
+        if success and out:
+            good("aplay -l works")
+        else:
+            bad("aplay -l produced no output", out or "no cards")
+            failures += 1
+    else:
+        bad("aplay not found", "install alsa-utils")
+        failures += 1
+
+    if has_command("alsactl"):
+        good("alsactl present")
+    else:
+        bad("alsactl missing", "install alsa-utils")
+        failures += 1
+
+    # I2C
+    section("I2C")
+    i2c_devs = sorted(glob.glob("/dev/i2c-*"))
+    if i2c_devs:
+        good(f"I2C buses: {i2c_devs}")
+    else:
+        bad("no /dev/i2c-*", "check dtparam=i2c_arm=on in config.txt")
+        failures += 1
+
+    if has_command("i2cdetect") and i2c_devs:
+        bus = i2c_devs[0].split("/")[-1].replace("i2c-", "")
+        success, out = run(f"timeout 5 i2cdetect -y {bus}", timeout=7)
+        if success:
+            good(f"i2cdetect -y {bus} works")
+        else:
+            bad(f"i2cdetect -y {bus} failed", out or "bus busy or empty")
+            failures += 1
+    elif i2c_devs:
+        bad("i2cdetect not installed", "install i2c-tools if you want bus scanning")
+        failures += 1
+
+    # SPI
+    section("SPI")
+    spi_devs = sorted(glob.glob("/dev/spidev*"))
+    if spi_devs:
+        good(f"SPI devices: {spi_devs}")
+    else:
+        bad("no /dev/spidev*", "check dtparam=spi=on in config.txt")
+        failures += 1
+
+    # GPIO
+    section("GPIO")
+    if exists("/dev/gpiochip0"):
+        good("/dev/gpiochip0 present")
+    else:
+        bad("/dev/gpiochip0 missing", "gpio device not present")
+        failures += 1
+
+    if has_command("gpioinfo"):
+        good("gpioinfo present")
+    else:
+        bad("gpioinfo missing", "install libgpiod-tools")
+        failures += 1
+
+    # Network
+    section("Network interfaces")
+    if exists("/sys/class/net"):
+        ifaces = sorted(os.listdir("/sys/class/net"))
+        print(f"  interfaces: {ifaces}")
+        if "lo" in ifaces:
+            good("loopback present")
+        else:
+            bad("loopback missing")
+            failures += 1
+        for name in ["eth0", "wlan0", "usb0"]:
+            if name in ifaces:
+                good(f"{name} present")
+    else:
+        bad("/sys/class/net missing", "networking not available")
+        failures += 1
+
+    section("Network IP")
+    if has_command("ifconfig"):
+        success, out = run("ifconfig eth0")
+        if success:
+            m = re.search(r"inet addr:(\d+\.\d+\.\d+\.\d+)", out)
+            if m:
+                good(f"eth0 has IPv4 {m.group(1)}")
+            else:
+                bad("eth0 has no IPv4 address", "check /etc/network/interfaces")
+                failures += 1
+        else:
+            bad("ifconfig eth0 failed", out)
+            failures += 1
+    else:
+        bad("ifconfig not found", "network tools missing")
+        failures += 1
+
+    section("SSH")
+    if exists("/etc/ssh/sshd_config"):
+        with open("/etc/ssh/sshd_config") as f:
+            sshd_cfg = f.read()
+        if re.search(r"^\s*PermitRootLogin\s+yes", sshd_cfg, re.M):
+            good("sshd_config PermitRootLogin yes")
+        else:
+            bad("sshd_config does not allow root login")
+            failures += 1
+        if re.search(r"^\s*PasswordAuthentication\s+yes", sshd_cfg, re.M):
+            good("sshd_config PasswordAuthentication yes")
+        else:
+            bad("sshd_config does not allow password auth")
+            failures += 1
+    else:
+        bad("/etc/ssh/sshd_config missing")
+        failures += 1
+
+    success, out = run("pidof sshd")
+    if success:
+        good(f"sshd running ({out})")
+    else:
+        bad("sshd not running", "start with /etc/init.d/S50sshd start")
+        failures += 1
+
+    if exists("/etc/shadow"):
+        with open("/etc/shadow") as f:
+            shadow = f.read()
+        m = re.search(r"^root:([^:]*):", shadow, re.M)
+        if m and m.group(1) and not m.group(1).startswith(("!", "*")):
+            good("root has a password set")
+        else:
+            bad("root has no/locked password", "set BR2_TARGET_GENERIC_ROOT_PASSWD")
+            failures += 1
+    else:
+        bad("/etc/shadow missing")
+        failures += 1
+
+    # pidap services / binaries
+    section("pidap binaries / services")
+    names = [
+        "pidap",
+        "pidap-buttons",
+        "pidap-ctl",
+        "pidap-menu",
+        "pidap-playlist",
+    ]
+    for name in names:
+        if has_command(name):
+            good(f"{name} in PATH")
+        else:
+            bad(f"{name} not in PATH", f"install /usr/bin/{name} or add to PATH")
+            failures += 1
+
+    services = ["pidap-menu", "pidap-playlist", "pidap-buttons"]
+    for s in services:
+        if exists(f"/etc/systemd/system/{s}.service"):
+            good(f"{s}.service installed")
+        elif glob.glob(f"/etc/init.d/*{s}"):
+            good(f"{s} init script installed")
+        else:
+            bad(f"{s} service not found", f"install {s}.service or init script")
+            failures += 1
+
+    section("Summary")
+    if failures:
+        print(f"Done. {failures} item(s) failed.")
+        return 1
+    print("All checks passed.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

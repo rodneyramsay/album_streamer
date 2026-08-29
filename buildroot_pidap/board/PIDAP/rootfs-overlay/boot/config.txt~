@@ -1,16 +1,18 @@
+
+# Core Hardware Interfaces
+dtparam=i2c_arm=on
+dtparam=spi=on
+dtparam=i2s=on
+
+# Pirate Audio Headphone Amp Configuration
+gpio=25=op,dh
+dtparam=audio=off
+
+
 # For more options and information see
 # http://rptl.io/configtxt
 # Some settings may impact device functionality. See link above for details
 
-
-auto_initramfs=1
-max_framebuffers=2
-
-
-# Uncomment some or all of these to enable the optional hardware interfaces
-dtparam=i2c_arm=on
-dtparam=i2s=on
-dtparam=spi=on
 
 # Enable audio (loads snd_bcm2835)
 dtparam=audio=off
@@ -52,6 +54,9 @@ dtoverlay=disable-bt
 # Enable host mode on the 2711 built-in XHCI USB controller.
 # This line should be removed if the legacy DWC2 controller is required
 # (e.g. for USB device mode) or if USB support is not required.
+#
+# RPI Zero V1.3 uses DWC2 Controller.
+#
 # otg_mode=1
 
 [cm5]

@@ -1,0 +1,22 @@
+#!/bin/sh
+#
+# Mount core virtual filesystems early in case the mdev init script is missing.
+#
+
+case "$1" in
+    start)
+        mkdir -p /proc /sys /dev/pts /tmp /run
+        mountpoint -q /proc || mount -t proc proc /proc
+        mountpoint -q /sys  || mount -t sysfs sys /sys
+        mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts -o mode=0620,gid=5
+        mountpoint -q /tmp   || mount -t tmpfs tmpfs /tmp   -o mode=1777
+        mountpoint -q /run   || mount -t tmpfs tmpfs /run   -o mode=0755,nosuid,nodev
+        # Mount any local filesystems in /etc/fstab (e.g. /usr/local)
+        mount -a || true
+        ;;
+    stop)
+        umount /run /tmp /dev/pts /sys /proc 2>/dev/null
+        ;;
+    *)
+        ;;
+esac
