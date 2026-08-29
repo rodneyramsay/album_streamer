@@ -31,3 +31,16 @@ sdcard: check
 	make -C $(BUILDROOT_DIR)
 	sudo dd if=$(BUILDROOT_DIR)/output/images/sdcard.img of=$(CARD) bs=4M status=progress conv=fsync
 	sudo ./deploy-nfs.sh
+	ssh-keygen -f /home/rodney/.ssh/known_hosts -R 192.168.0.31 2>/dev/null || true
+
+sdcard-boot: check
+	-for p in 1 2 3; do sudo umount $(CARD)$$p 2>/dev/null || true; done
+	make -C $(BUILDROOT_DIR)
+	sudo dd if=$(BUILDROOT_DIR)/output/images/boot.vfat of=$(CARD)1 bs=4M status=progress conv=fsync
+	sudo ./deploy-nfs.sh
+	ssh-keygen -f /home/rodney/.ssh/known_hosts -R 192.168.0.31 2>/dev/null || true
+
+sdcard-data: check
+	-for p in 1 2 3; do sudo umount $(CARD)$$p 2>/dev/null || true; done
+	make -C $(BUILDROOT_DIR)
+	sudo dd if=$(BUILDROOT_DIR)/output/images/user-data.ext4 of=$(CARD)3 bs=4M status=progress conv=fsync

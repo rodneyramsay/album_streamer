@@ -1,11 +1,10 @@
 image boot.vfat {
 	vfat {
-		files = {
+		extraargs = "-F 32"
 #BOOT_FILES#
-		}
 	}
 
-	size = 32M
+	size = 128M
 }
 
 image sdcard.img {

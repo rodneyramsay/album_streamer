@@ -20,7 +20,8 @@ MUSIC_INCLUDE="${MUSIC_INCLUDE:-Rock/Who/Tommy}"
 DATA_IMG="${BINARIES_DIR}/user-data.ext4"
 STAGING="${BUILD_DIR}/user-data-staging"
 
-# Clean staging tree and create Music at the future /usr/local mount root
+# Clean staging tree and create Music at the user-data image root.
+# The user-data image is mounted at /usr/local, so Music/ here becomes /usr/local/Music.
 rm -rf "${STAGING}"
 mkdir -p "${STAGING}/Music"
 chmod 0755 "${STAGING}" "${STAGING}/Music"
@@ -44,7 +45,7 @@ fi
 # If an include path was found, copy it into the staging Music tree
 if [ -d "${MUSIC_SOURCE}/${MUSIC_INCLUDE}" ]; then
     echo "Including ${MUSIC_SOURCE}/${MUSIC_INCLUDE} -> /usr/local/Music/${MUSIC_INCLUDE}"
-    DEST_DIR="${STAGING}/usr/local/Music"
+    DEST_DIR="${STAGING}/Music"
     mkdir -p "${DEST_DIR}"
     tar --sort=name -C "${MUSIC_SOURCE}" -ch "${MUSIC_INCLUDE}" \
         | tar -C "${DEST_DIR}" -xv

@@ -13,7 +13,8 @@ if [ ! -e "${GENIMAGE_CFG}" ]; then
 	FILES=()
 
 	for i in "${BINARIES_DIR}"/*.dtb "${BINARIES_DIR}"/rpi-firmware/*; do
-		[ -e "$i" ] || continue
+		# only regular files -- skip the overlays/ subdir (handled below)
+		[ -f "$i" ] || continue
 		FILES+=( "${i#${BINARIES_DIR}/}" )
 	done
 
@@ -25,7 +26,12 @@ if [ ! -e "${GENIMAGE_CFG}" ]; then
 	KERNEL=$(sed -n 's/^kernel=//p' "${BINARIES_DIR}/rpi-firmware/config.txt")
 	FILES+=( "${KERNEL}" )
 
-	BOOT_FILES=$(printf '\\t\\t\\t"%s",\\n' "${FILES[@]}")
+	BOOT_FILES=""
+	for f in "${FILES[@]}"; do
+		dest="${f#rpi-firmware/}"
+		BOOT_FILES="${BOOT_FILES}$(printf '\\tfile %s {\\n\\t\\timage = "%s"\\n\\t}\\n' "${dest}" "${f}")"
+	done
+
 	sed "s|#BOOT_FILES#|${BOOT_FILES}|" "${BOARD_DIR}/genimage.cfg.in" \
 		> "${GENIMAGE_CFG}"
 fi

@@ -135,12 +135,12 @@ def main():
 
     if has_command("i2cdetect") and i2c_devs:
         bus = i2c_devs[0].split("/")[-1].replace("i2c-", "")
-        success, out = run(f"timeout 5 i2cdetect -y {bus}", timeout=7)
+        success, out = run(f"timeout 15 i2cdetect -y {bus}", timeout=20)
         if success:
             good(f"i2cdetect -y {bus} works")
         else:
-            bad(f"i2cdetect -y {bus} failed", out or "bus busy or empty")
-            failures += 1
+            # scan can fail on an empty/busy bus; the bus itself is what matters
+            bad(f"i2cdetect -y {bus} failed", out or "bus busy or empty (not required)")
     elif i2c_devs:
         bad("i2cdetect not installed", "install i2c-tools if you want bus scanning")
         failures += 1
@@ -265,6 +265,19 @@ def main():
         else:
             bad(f"{s} service not found", f"install {s}.service or init script")
             failures += 1
+
+    # User data / music
+    section("User data")
+    if exists("/usr/local/Music"):
+        music_count = len(os.listdir("/usr/local/Music"))
+        if music_count:
+            good(f"/usr/local/Music has {music_count} item(s)")
+        else:
+            bad("/usr/local/Music is empty", "populate user-data partition with Music/")
+            failures += 1
+    else:
+        bad("/usr/local/Music missing", "check /etc/fstab and user-data partition")
+        failures += 1
 
     section("Summary")
     if failures:

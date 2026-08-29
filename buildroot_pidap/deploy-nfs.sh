@@ -38,7 +38,8 @@ ${SUDO} sh -c "echo '${EXPORT_DIR} ${CLIENT_IP}(rw,no_root_squash,no_subtree_che
 
 # Unmount the old rootfs if already mounted
 if mountpoint -q "${EXPORT_DIR}"; then
-    ${SUDO} umount "${EXPORT_DIR}"
+    # -l: lazy unmount so a live NFS target doesn't block the refresh
+    ${SUDO} umount -l "${EXPORT_DIR}"
 fi
 
 # Mount the new rootfs image over the export directory
