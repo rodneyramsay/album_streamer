@@ -1,0 +1,20 @@
+#!/bin/sh
+
+DAEMON=/usr/lib/pidap/pidap
+
+case "$1" in
+    start)
+        /sbin/start-stop-daemon -S -b -x "$DAEMON"
+        ;;
+    stop)
+        /sbin/start-stop-daemon -K -x "$DAEMON"
+        ;;
+    restart)
+        $0 stop
+        $0 start
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}"
+        ;;
+esac
+exit $?
