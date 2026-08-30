@@ -7,6 +7,19 @@ BOARD_NAME="$(basename ${BOARD_DIR})"
 GENIMAGE_CFG="${BOARD_DIR}/genimage-${BOARD_NAME}.cfg"
 GENIMAGE_TMP="${BUILD_DIR}/genimage.tmp"
 
+# Compile the Pirate Audio TFT overlay (if dtc is available).
+# This must happen before genimage.cfg is generated, so the overlay gets
+# included in the boot (vfat) image.
+DTC="${HOST_DIR:-}/bin/dtc"
+if [ -x "${DTC}" ] && [ -f "${BOARD_DIR}/pirate-tft.dts" ]; then
+    echo "Compiling Pirate Audio TFT overlay..."
+    mkdir -p "${BINARIES_DIR}/rpi-firmware/overlays"
+    "${DTC}" -@ -I dts -O dtb -o "${BINARIES_DIR}/rpi-firmware/overlays/pirate-tft.dtbo" "${BOARD_DIR}/pirate-tft.dts"
+fi
+
+# Use the project's custom cmdline.txt on the boot partition
+cp -f "${BOARD_DIR}/cmdline.txt" "${BINARIES_DIR}/rpi-firmware/cmdline.txt"
+
 # generate genimage from template if a board specific variant doesn't exists
 if [ ! -e "${GENIMAGE_CFG}" ]; then
 	GENIMAGE_CFG="${BINARIES_DIR}/genimage.cfg"

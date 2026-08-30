@@ -12,5 +12,19 @@ dtoverlay=hifiberry-dac
 # Pirate Audio headphone amp enable
 gpio=25=op,dh
 
+# VC4 KMS for framebuffer support; noaudio to avoid audio conflict
+dtoverlay=vc4-kms-v3d,noaudio
+max_framebuffers=2
+disable_fw_kms_setup=1
+disable_overscan=0
+
+# Disable HDMI output so console/fb goes to the TFT
+hdmi_blanking=2
+hdmi_force_hotplug=0
+hdmi_ignore_hotplug=1
+
+# Pirate Audio 240x240 ST7789 TFT on SPI0 (mipi-dbi-spi with custom panel.bin)
+dtoverlay=mipi-dbi-spi,spi0-1,speed=48000000,write-only,dc-gpio=9,reset-gpio=27,backlight-gpio=13,width=240,height=240
+
 # USB host for the Zero
 dtoverlay=dwc2,dr_mode=host

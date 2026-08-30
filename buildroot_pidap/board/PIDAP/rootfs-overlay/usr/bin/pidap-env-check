@@ -248,6 +248,8 @@ def main():
         "pidap-ctl",
         "pidap-menu",
         "pidap-playlist",
+        "amixer",
+        "play",
     ]
     for name in names:
         if has_command(name):
@@ -269,14 +271,14 @@ def main():
     # pidap runtime
     section("pidap runtime")
     for proc in ["pidap", "pidap-menu", "pidap-buttons"]:
-        ok, _ = run(f"pgrep -f '{proc}' 2>/dev/null")
+        ok, _ = run(f"ps -w 2>/dev/null | grep -v grep | grep -v 'pidap-env-check' | grep -qE '\\b{proc}$'")
         if ok:
             good(f"{proc} is running")
         else:
             bad(f"{proc} is not running", f"start /etc/init.d/S99pidap")
             failures += 1
 
-    play_ok, _ = run("pgrep -f 'sox|play' 2>/dev/null")
+    play_ok, _ = run("ps -w 2>/dev/null | grep -v grep | grep -qE '^(play|sox)'")
     if play_ok:
         good("audio playback (sox/play) is running")
     else:

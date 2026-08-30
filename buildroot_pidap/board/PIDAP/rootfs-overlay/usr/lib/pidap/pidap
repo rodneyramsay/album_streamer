@@ -742,13 +742,9 @@ sub monitor_playback {
                if (defined $line) {
                   $consumed = 1;
                   chomp $line;
-                  my $next_line = <$menu_out_fh>;
-                  if ($line =~ /^album=(.+)/) {
+                  if ($line =~ /^album=(.+?)\toffset=([0-9.]+)/) {
                      $resume_album = $1;
-                     $resume_offset = 0;
-                     if (defined $next_line && $next_line =~ /^offset=([0-9.]+)/) {
-                        $resume_offset = $1;
-                     }
+                     $resume_offset = $2;
                      $do_menu_select = 1;
                      print("DEBUG: menu result album=$resume_album offset=$resume_offset\n") if $ENV{PIDAP_DEBUG};
                      kill(9, -$play_id) if $play_id > 0;

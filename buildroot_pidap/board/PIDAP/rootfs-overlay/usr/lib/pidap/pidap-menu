@@ -468,8 +468,7 @@ sub run_menu {
     if (open(my $out, '>', $menu_out_fifo)) {
         if ($did_select) {
             log_warn("writing result: album=$result_album offset=$result_offset");
-            print $out "album=$result_album\n";
-            print $out "offset=$result_offset\n";
+            print $out "album=$result_album\toffset=$result_offset\n";
         } else {
             log_warn("writing result: cancel");
             print $out "cancel=1\n";

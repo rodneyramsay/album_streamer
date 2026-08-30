@@ -5,7 +5,8 @@
 #
 # Optional environment overrides:
 #   MUSIC_SOURCE    - top-level source directory (default: /mnt/wd_my_cloud/FLAC32G_A)
-#   MUSIC_INCLUDE   - relative path to include under /usr/local/Music
+#   MUSIC_INCLUDE   - relative path to include under the user-data image root.
+#                     This will appear directly under /usr/local/Music on the Pi
 #                     (default: Rock/Who/Tommy)
 #   USERDATA_SIZE   - override the image size (e.g. 2G, 500M)
 #
@@ -17,14 +18,16 @@ set -e
 
 MUSIC_SOURCE="${MUSIC_SOURCE:-/mnt/wd_my_cloud/FLAC32G_A}"
 MUSIC_INCLUDE="${MUSIC_INCLUDE:-Rock/Who/Tommy}"
+# Leave USERDATA_SIZE unset to size to the selected music + 20%.
+USERDATA_SIZE="${USERDATA_SIZE:-}"
 DATA_IMG="${BINARIES_DIR}/user-data.ext4"
 STAGING="${BUILD_DIR}/user-data-staging"
 
-# Clean staging tree and create Music at the user-data image root.
-# The user-data image is mounted at /usr/local, so Music/ here becomes /usr/local/Music.
+# Clean staging tree. The user-data image is mounted at /usr/local/Music,
+# so the staging root becomes the music root on the Pi.
 rm -rf "${STAGING}"
-mkdir -p "${STAGING}/Music"
-chmod 0755 "${STAGING}" "${STAGING}/Music"
+mkdir -p "${STAGING}"
+chmod 0755 "${STAGING}"
 
 # Decide the image size.  If an include path exists, size to the data plus
 # ~20% headroom, otherwise make a small empty 1G partition.
@@ -42,11 +45,10 @@ else
     IMAGE_SIZE="1073741824"  # 1 GiB
 fi
 
-# If an include path was found, copy it into the staging Music tree
+# If an include path was found, copy it into the staging tree
 if [ -d "${MUSIC_SOURCE}/${MUSIC_INCLUDE}" ]; then
     echo "Including ${MUSIC_SOURCE}/${MUSIC_INCLUDE} -> /usr/local/Music/${MUSIC_INCLUDE}"
-    DEST_DIR="${STAGING}/Music"
-    mkdir -p "${DEST_DIR}"
+    DEST_DIR="${STAGING}"
     tar --sort=name -C "${MUSIC_SOURCE}" -ch "${MUSIC_INCLUDE}" \
         | tar -C "${DEST_DIR}" -xv
 else

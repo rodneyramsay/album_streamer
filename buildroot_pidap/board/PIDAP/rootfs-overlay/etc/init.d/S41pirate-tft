@@ -1,0 +1,45 @@
+#!/bin/sh
+#
+# Map tty1 to the Pirate Audio ST7789 TFT (/dev/fb1).
+# The display is brought up via the pirate-tft device tree overlay.
+# To keep the console on HDMI instead, create /etc/disable-pirate-tft before boot.
+#
+
+case "$1" in
+    start)
+        if [ -e /etc/disable-pirate-tft ]; then
+            echo "Pirate TFT disabled by /etc/disable-pirate-tft"
+            exit 0
+        fi
+
+        # The panel driver may have deferred because the backlight was not ready.
+        # Load gpio-backlight, then remove and re-insert the panel so it re-probes.
+        modprobe gpio_backlight 2>/dev/null || modprobe gpio-backlight 2>/dev/null || true
+        sleep 1
+        modprobe -r panel_mipi_dbi 2>/dev/null || modprobe -r panel-mipi-dbi 2>/dev/null || true
+        modprobe panel_mipi_dbi 2>/dev/null || modprobe panel-mipi-dbi 2>/dev/null || true
+
+        # Give the panel time to probe and create /dev/fb1.
+        for i in $(seq 1 30); do
+            [ -e /dev/fb1 ] && break
+            sleep 0.5
+        done
+
+        if [ -e /dev/fb1 ]; then
+            # Map virtual console 1 (tty1, used by pidap-menu) to the TFT
+            con2fbmap 1 1
+            # Use the same Terminus 10x18 font as the Pi Zero 2W setup
+            if [ -f /usr/share/consolefonts/Uni2-Terminus18x10.psf.gz ]; then
+                setfont -C /dev/tty1 /usr/share/consolefonts/Uni2-Terminus18x10.psf.gz
+            fi
+            echo "Pirate TFT ready on /dev/fb1"
+        else
+            echo "Warning: /dev/fb1 did not appear" >&2
+            dmesg | grep -i -E 'mipi|dbi|panel|backlight|firmware' | tail -n 30 >&2
+        fi
+        ;;
+    stop)
+        ;;
+    *)
+        ;;
+esac

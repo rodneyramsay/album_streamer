@@ -139,7 +139,7 @@ while($run) {
       &add_usb_music_roots(@usb_mounts);
    }
 
-   if (!$boot_mode && -r $playlist_file) {
+   if (!$boot_mode && -r $playlist_file && !&playlist_is_stale()) {
       print "USB mounts ready, using existing playlist\n";
       exit(0);
    }
@@ -711,6 +711,20 @@ sub read_resume {
       }
    }
    return ($album, $offset);
+}
+
+sub playlist_is_stale {
+   return 0 unless -r $playlist_file;
+   for my $mount (@mounts) {
+      next unless -d $mount;
+      my $newer = `find "$mount" -newer "$playlist_file" -print 2>/dev/null | head -1`;
+      if ($newer =~ /\S/) {
+         chomp($newer);
+         print "Playlist is stale: $newer is newer than $playlist_file\n";
+         return 1;
+      }
+   }
+   return 0;
 }
 
 

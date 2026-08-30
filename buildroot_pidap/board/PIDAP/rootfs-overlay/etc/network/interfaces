@@ -1,7 +1,6 @@
-auto eth0
+# eth0 is configured by the kernel ip=... command line parameter, so
+# do not bring it up again via ifupdown (avoids "RTNETLINK: File exists").
 
-iface eth0 inet static
-    address 192.168.0.31
-    netmask 255.255.0.0
-    # gateway 192.168.0.1
-    # dns-nameservers 192.168.0.1
+iface eth0 inet manual
+    # address 192.168.0.31
+    # netmask 255.255.0.0

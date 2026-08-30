@@ -1,0 +1,26 @@
+#!/bin/sh
+#
+# Mount the SD user-data partition on /usr/local/Music.
+# S00mount runs too early (before /dev/mmcblk0p3 exists),
+# so we handle the music mount here, well before pidap starts.
+#
+
+case "$1" in
+    start)
+        mkdir -p /usr/local/Music
+        for i in $(seq 1 30); do
+            if [ -b /dev/mmcblk0p3 ]; then
+                if mountpoint -q /usr/local/Music; then
+                    echo "/usr/local/Music already mounted" >/dev/null
+                else
+                    mount /dev/mmcblk0p3 /usr/local/Music
+                fi
+                exit 0
+            fi
+            sleep 0.5
+        done
+        echo "S40mount-usrlocal: /dev/mmcblk0p3 did not appear" >&2
+        ;;
+    *)
+        ;;
+esac

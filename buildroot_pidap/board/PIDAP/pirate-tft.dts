@@ -1,0 +1,53 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * Device tree overlay for the Pirate Audio 240x240 ST7789 TFT
+ * connected to SPI0 (CE1) on a Raspberry Pi Zero.
+ *
+ * Uses:
+ *   - GPIO 7  (CE1)        chip select
+ *   - GPIO 9  (MISO)       data/command (D/C)
+ *   - GPIO 10 (MOSI)       SPI data
+ *   - GPIO 11 (SCLK)       SPI clock
+ *   - GPIO 13              backlight
+ */
+
+/ {
+    compatible = "brcm,bcm2835";
+
+    fragment@0 {
+        target = <&spi0>;
+        __overlay__ {
+            status = "okay";
+
+            spidev@1 {
+                status = "disabled";
+            };
+
+            st7789v@1 {
+                compatible = "sitronix,st7789v";
+                reg = <1>;
+                spi-max-frequency = <16000000>;
+                pinctrl-0 = <&st7789v_pins>;
+                pinctrl-names = "default";
+                dc-gpios = <&gpio 9 0>;
+                led-gpios = <&gpio 13 0>;
+                width = <240>;
+                height = <240>;
+                buswidth = <8>;
+            };
+        };
+    };
+
+    fragment@1 {
+        target = <&gpio>;
+        __overlay__ {
+            st7789v_pins: st7789v_pins {
+                brcm,pins = <9 13>;
+                brcm,function = <1 1>; /* output */
+                brcm,pull = <0 0>;     /* none */
+            };
+        };
+    };
+};

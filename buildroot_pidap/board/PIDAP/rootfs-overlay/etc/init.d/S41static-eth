@@ -8,7 +8,11 @@ case "$1" in
     start)
         for i in $(seq 1 30); do
             if [ -e /sys/class/net/eth0 ]; then
-                ifconfig eth0 192.168.0.31 netmask 255.255.0.0 up
+                if ip -o -4 addr show eth0 | grep -q "192.168.0.31"; then
+                    echo "eth0 already configured" >/dev/null
+                else
+                    ifconfig eth0 192.168.0.31 netmask 255.255.0.0 up
+                fi
                 exit 0
             fi
             sleep 1

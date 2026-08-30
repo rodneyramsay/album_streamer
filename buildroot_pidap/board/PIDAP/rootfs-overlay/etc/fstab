@@ -1,2 +1,2 @@
 # <file system> <mount point> <type>  <options>                  <dump> <pass>
-/dev/mmcblk0p3  /usr/local    ext4    rw,noatime,errors=remount-ro  0      2
+/dev/mmcblk0p3  /usr/local/Music    auto    rw,defaults                  0      0
