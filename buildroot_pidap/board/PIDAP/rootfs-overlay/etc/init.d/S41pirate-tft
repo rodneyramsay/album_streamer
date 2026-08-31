@@ -28,10 +28,12 @@ case "$1" in
         if [ -e /dev/fb1 ]; then
             # Map virtual console 1 (tty1, used by pidap-menu) to the TFT
             con2fbmap 1 1
-            # Use the same Terminus 10x18 font as the Pi Zero 2W setup
+            # Use Terminus 10x18 so the 24-column, 13-line pidap-menu fills the 240x240 screen
             if [ -f /usr/share/consolefonts/Uni2-Terminus18x10.psf.gz ]; then
                 setfont -C /dev/tty1 /usr/share/consolefonts/Uni2-Terminus18x10.psf.gz
             fi
+            # Hide the blinking cursor and the shell prompt
+            printf '\033[?25l' > /dev/tty1
             echo "Pirate TFT ready on /dev/fb1"
         else
             echo "Warning: /dev/fb1 did not appear" >&2

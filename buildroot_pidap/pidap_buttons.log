@@ -1,0 +1,232 @@
+[Thu Jan  1 00:00:41 1970.751627] pidap-buttons starting, PID=265
+[Thu Jan  1 00:00:41 1970.752275] Button map: A.vol_up,B.vol_down,X.lock,Y.next_track
+[Thu Jan  1 00:00:41 1970.752587] Starting gpiomon: gpiomon -B pull-up -F %o %e -b gpiochip0 5 6 16 24
+[Thu Jan  1 00:00:41 1970.826777] Using pidap PID from parent: 126
+[Thu Jan  1 00:00:41 1970.828258] Backlight on via bl_power
+[Thu Jan  1 00:00:41 1970.877814] New play pid 277, album_start set to 41.877691 (offset 0)
+[Thu Jan  1 00:00:41 1970.878102] Backlight timer armed after first play started
+[Thu Jan  1 00:00:48 1970.651597] Button A pressed, func=vol_up
+[Thu Jan  1 00:00:48 1970.814240] release A, func=vol_up, in_menu=0, menu_pressed=
+[Thu Jan  1 00:00:48 1970.814701] Volume up: amixer sset Amp 2%+
+[Thu Jan  1 00:00:48 1970.862304] amixer rc=0 out=Simple mixer control 'Amp',0
+  Capabilities: volume
+  Playback channels: Front Left - Front Right
+  Capture channels: Front Left - Front Right
+  Limits: 0 - 255
+  Front Left: 112 [44%] [-33.20dB]
+  Front Right: 112 [44%] [-33.20dB]
+[Thu Jan  1 00:00:49 1970.003010] Button A pressed, func=vol_up
+[Thu Jan  1 00:00:49 1970.142134] release A, func=vol_up, in_menu=0, menu_pressed=
+[Thu Jan  1 00:00:49 1970.142598] Volume up: amixer sset Amp 2%+
+[Thu Jan  1 00:00:49 1970.177835] amixer rc=0 out=Simple mixer control 'Amp',0
+  Capabilities: volume
+  Playback channels: Front Left - Front Right
+  Capture channels: Front Left - Front Right
+  Limits: 0 - 255
+  Front Left: 122 [48%] [-31.70dB]
+  Front Right: 122 [48%] [-31.70dB]
+[Thu Jan  1 00:00:49 1970.325553] Button A pressed, func=vol_up
+[Thu Jan  1 00:00:49 1970.472122] release A, func=vol_up, in_menu=0, menu_pressed=
+[Thu Jan  1 00:00:49 1970.472526] Volume up: amixer sset Amp 2%+
+[Thu Jan  1 00:00:49 1970.507875] amixer rc=0 out=Simple mixer control 'Amp',0
+  Capabilities: volume
+  Playback channels: Front Left - Front Right
+  Capture channels: Front Left - Front Right
+  Limits: 0 - 255
+  Front Left: 132 [52%] [-30.20dB]
+  Front Right: 132 [52%] [-30.20dB]
+[Thu Jan  1 00:00:49 1970.657004] Button A pressed, func=vol_up
+[Thu Jan  1 00:00:49 1970.812421] release A, func=vol_up, in_menu=0, menu_pressed=
+[Thu Jan  1 00:00:49 1970.812820] Volume up: amixer sset Amp 2%+
+[Thu Jan  1 00:00:49 1970.847955] amixer rc=0 out=Simple mixer control 'Amp',0
+  Capabilities: volume
+  Playback channels: Front Left - Front Right
+  Capture channels: Front Left - Front Right
+  Limits: 0 - 255
+  Front Left: 142 [56%] [-28.70dB]
+  Front Right: 142 [56%] [-28.70dB]
+[Thu Jan  1 00:00:50 1970.073344] Button A pressed, func=vol_up
+[Thu Jan  1 00:00:50 1970.234952] release A, func=vol_up, in_menu=0, menu_pressed=
+[Thu Jan  1 00:00:50 1970.235361] Volume up: amixer sset Amp 2%+
+[Thu Jan  1 00:00:50 1970.269930] amixer rc=0 out=Simple mixer control 'Amp',0
+  Capabilities: volume
+  Playback channels: Front Left - Front Right
+  Capture channels: Front Left - Front Right
+  Limits: 0 - 255
+  Front Left: 152 [60%] [-27.20dB]
+  Front Right: 152 [60%] [-27.20dB]
+[Thu Jan  1 00:00:50 1970.463238] Button A pressed, func=vol_up
+[Thu Jan  1 00:00:50 1970.612495] release A, func=vol_up, in_menu=0, menu_pressed=
+[Thu Jan  1 00:00:50 1970.612896] Volume up: amixer sset Amp 2%+
+[Thu Jan  1 00:00:50 1970.652931] amixer rc=0 out=Simple mixer control 'Amp',0
+  Capabilities: volume
+  Playback channels: Front Left - Front Right
+  Capture channels: Front Left - Front Right
+  Limits: 0 - 255
+  Front Left: 162 [64%] [-25.70dB]
+  Front Right: 162 [64%] [-25.70dB]
+[Thu Jan  1 00:00:50 1970.877718] Button A pressed, func=vol_up
+[Thu Jan  1 00:00:51 1970.050885] release A, func=vol_up, in_menu=0, menu_pressed=
+[Thu Jan  1 00:00:51 1970.051302] Volume up: amixer sset Amp 2%+
+[Thu Jan  1 00:00:51 1970.090275] amixer rc=0 out=Simple mixer control 'Amp',0
+  Capabilities: volume
+  Playback channels: Front Left - Front Right
+  Capture channels: Front Left - Front Right
+  Limits: 0 - 255
+  Front Left: 172 [67%] [-24.20dB]
+  Front Right: 172 [67%] [-24.20dB]
+[Thu Jan  1 00:00:51 1970.304222] Button A pressed, func=vol_up
+[Thu Jan  1 00:00:51 1970.461845] release A, func=vol_up, in_menu=0, menu_pressed=
+[Thu Jan  1 00:00:51 1970.462308] Volume up: amixer sset Amp 2%+
+[Thu Jan  1 00:00:51 1970.502456] amixer rc=0 out=Simple mixer control 'Amp',0
+  Capabilities: volume
+  Playback channels: Front Left - Front Right
+  Capture channels: Front Left - Front Right
+  Limits: 0 - 255
+  Front Left: 182 [71%] [-22.70dB]
+  Front Right: 182 [71%] [-22.70dB]
+[Thu Jan  1 00:00:51 1970.749733] Button A pressed, func=vol_up
+[Thu Jan  1 00:00:51 1970.915647] release A, func=vol_up, in_menu=0, menu_pressed=
+[Thu Jan  1 00:00:51 1970.916064] Volume up: amixer sset Amp 2%+
+[Thu Jan  1 00:00:51 1970.950611] amixer rc=0 out=Simple mixer control 'Amp',0
+  Capabilities: volume
+  Playback channels: Front Left - Front Right
+  Capture channels: Front Left - Front Right
+  Limits: 0 - 255
+  Front Left: 192 [75%] [-21.20dB]
+  Front Right: 192 [75%] [-21.20dB]
+[Thu Jan  1 00:00:52 1970.187600] Button A pressed, func=vol_up
+[Thu Jan  1 00:00:52 1970.352522] Button A pressed, func=vol_up
+[Thu Jan  1 00:00:54 1970.235960] Button Y pressed, func=next_track
+[Thu Jan  1 00:00:54 1970.236309] Next album
+[Thu Jan  1 00:00:54 1970.238881] kill_play sig=9 pid=277
+[Thu Jan  1 00:00:54 1970.242018] kill_play sent signal to 1 process(es)
+[Thu Jan  1 00:00:54 1970.400539] release Y, func=next_track, in_menu=0, menu_pressed=
+[Thu Jan  1 00:00:54 1970.400862] Button Y release ignored (combo active)
+[Thu Jan  1 00:00:55 1970.890866] Button Y pressed, func=next_track
+[Thu Jan  1 00:00:55 1970.891190] Next album
+[Thu Jan  1 00:00:55 1970.895690] kill_play sig=9 pid=302
+[Thu Jan  1 00:00:55 1970.897584] kill_play sent signal to 1 process(es)
+[Thu Jan  1 00:00:56 1970.039590] release Y, func=next_track, in_menu=0, menu_pressed=
+[Thu Jan  1 00:00:56 1970.039906] Button Y release ignored (combo active)
+[Thu Jan  1 00:00:57 1970.027919] Button A pressed, func=vol_up
+[Thu Jan  1 00:00:57 1970.219906] release A, func=vol_up, in_menu=0, menu_pressed=
+[Thu Jan  1 00:00:57 1970.223987] Volume up: amixer sset Amp 2%+
+[Thu Jan  1 00:00:57 1970.283357] amixer rc=0 out=Simple mixer control 'Amp',0
+  Capabilities: volume
+  Playback channels: Front Left - Front Right
+  Capture channels: Front Left - Front Right
+  Limits: 0 - 255
+  Front Left: 202 [79%] [-19.70dB]
+  Front Right: 202 [79%] [-19.70dB]
+[Thu Jan  1 00:00:57 1970.518324] Button X pressed, func=lock
+[Thu Jan  1 00:00:57 1970.675953] release X, func=lock, in_menu=0, menu_pressed=
+[Thu Jan  1 00:00:57 1970.679345] Pausing playback
+[Thu Jan  1 00:01:02 1970.427865] Button Y pressed, func=next_track
+[Thu Jan  1 00:01:02 1970.598541] release Y, func=next_track, in_menu=0, menu_pressed=
+[Thu Jan  1 00:01:02 1970.598993] Entering menu mode
+[Thu Jan  1 00:01:05 1970.441983] Button Y pressed, func=next_track
+[Thu Jan  1 00:01:05 1970.442457] Menu: Y -> back
+[Thu Jan  1 00:01:05 1970.607357] release Y, func=next_track, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:01:06 1970.002479] Button Y pressed, func=next_track
+[Thu Jan  1 00:01:06 1970.002939] Menu: Y -> back
+[Thu Jan  1 00:01:06 1970.149911] release Y, func=next_track, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:01:06 1970.396097] Button Y pressed, func=next_track
+[Thu Jan  1 00:01:06 1970.396501] Menu: Y -> back
+[Thu Jan  1 00:01:06 1970.529252] release Y, func=next_track, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:01:06 1970.916786] Button Y pressed, func=next_track
+[Thu Jan  1 00:01:06 1970.917262] Menu: Y -> back
+[Thu Jan  1 00:01:07 1970.053277] release Y, func=next_track, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:01:08 1970.489771] Button Y pressed, func=next_track
+[Thu Jan  1 00:01:08 1970.490300] Menu: Y -> back
+[Thu Jan  1 00:01:08 1970.642673] release Y, func=next_track, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:01:10 1970.761651] Button Y pressed, func=next_track
+[Thu Jan  1 00:01:10 1970.762122] Menu: Y -> back
+[Thu Jan  1 00:01:10 1970.948765] release Y, func=next_track, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:01:12 1970.283895] Button B pressed, func=vol_down
+[Thu Jan  1 00:01:12 1970.284354] Menu: B -> down
+[Thu Jan  1 00:01:12 1970.411791] release B, func=vol_down, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:01:12 1970.565675] Button B pressed, func=vol_down
+[Thu Jan  1 00:01:12 1970.566140] Menu: B -> down
+[Thu Jan  1 00:01:12 1970.692416] release B, func=vol_down, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:01:12 1970.949780] Button A pressed, func=vol_up
+[Thu Jan  1 00:01:12 1970.950299] Menu: A -> up
+[Thu Jan  1 00:01:13 1970.080538] release A, func=vol_up, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:01:13 1970.176879] Button A pressed, func=vol_up
+[Thu Jan  1 00:01:13 1970.177333] Menu: A -> up
+[Thu Jan  1 00:01:13 1970.314485] release A, func=vol_up, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:01:14 1970.089542] Button X pressed, func=lock
+[Thu Jan  1 00:01:14 1970.089965] Menu: X -> select
+[Thu Jan  1 00:01:14 1970.247054] release X, func=lock, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:01:14 1970.811240] Button X pressed, func=lock
+[Thu Jan  1 00:01:14 1970.811719] Menu: X -> select
+[Thu Jan  1 00:01:14 1970.983281] release X, func=lock, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:01:15 1970.329188] Button A pressed, func=vol_up
+[Thu Jan  1 00:01:15 1970.329660] Menu: A -> up
+[Thu Jan  1 00:01:15 1970.454086] release A, func=vol_up, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:01:15 1970.575735] Button A pressed, func=vol_up
+[Thu Jan  1 00:01:15 1970.576200] Menu: A -> up
+[Thu Jan  1 00:01:15 1970.725432] release A, func=vol_up, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:01:16 1970.003003] Button B pressed, func=vol_down
+[Thu Jan  1 00:01:16 1970.003454] Menu: B -> down
+[Thu Jan  1 00:01:16 1970.137148] release B, func=vol_down, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:01:16 1970.230772] Button B pressed, func=vol_down
+[Thu Jan  1 00:01:16 1970.231250] Menu: B -> down
+[Thu Jan  1 00:01:16 1970.341191] release B, func=vol_down, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:01:16 1970.435056] Button B pressed, func=vol_down
+[Thu Jan  1 00:01:16 1970.435459] Menu: B -> down
+[Thu Jan  1 00:01:16 1970.588335] release B, func=vol_down, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:01:16 1970.847366] Button B pressed, func=vol_down
+[Thu Jan  1 00:01:16 1970.847773] Menu: B -> down
+[Thu Jan  1 00:01:16 1970.984956] release B, func=vol_down, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:01:17 1970.058748] Button B pressed, func=vol_down
+[Thu Jan  1 00:01:17 1970.059209] Menu: B -> down
+[Thu Jan  1 00:01:17 1970.189439] release B, func=vol_down, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:01:17 1970.446146] Button A pressed, func=vol_up
+[Thu Jan  1 00:01:17 1970.446694] Menu: A -> up
+[Thu Jan  1 00:01:17 1970.551398] release A, func=vol_up, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:01:17 1970.646072] Button A pressed, func=vol_up
+[Thu Jan  1 00:01:17 1970.646585] Menu: A -> up
+[Thu Jan  1 00:01:17 1970.767385] release A, func=vol_up, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:01:18 1970.433254] Button B pressed, func=vol_down
+[Thu Jan  1 00:01:18 1970.433663] Menu: B -> down
+[Thu Jan  1 00:01:18 1970.546475] release B, func=vol_down, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:01:18 1970.638807] Button B pressed, func=vol_down
+[Thu Jan  1 00:01:18 1970.639273] Menu: B -> down
+[Thu Jan  1 00:01:18 1970.759573] release B, func=vol_down, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:01:33 1970.912287] Backlight off via bl_power
+[Thu Jan  1 00:01:33 1970.914868] Backlight off due to inactivity
+[Thu Jan  1 00:02:03 1970.290248] Backlight on via bl_power
+[Thu Jan  1 00:02:03 1970.290588] Button A woke backlight
+[Thu Jan  1 00:02:03 1970.290946] Button A pressed, func=vol_up
+[Thu Jan  1 00:02:03 1970.291253] Menu: A -> up
+[Thu Jan  1 00:02:03 1970.483187] release A, func=vol_up, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:02:04 1970.062127] Button A pressed, func=vol_up
+[Thu Jan  1 00:02:04 1970.062629] Menu: A -> up
+[Thu Jan  1 00:02:04 1970.269190] release A, func=vol_up, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:02:11 1970.554906] Button B pressed, func=vol_down
+[Thu Jan  1 00:02:11 1970.555356] Menu: B -> down
+[Thu Jan  1 00:02:11 1970.724348] release B, func=vol_down, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:02:11 1970.866800] Button B pressed, func=vol_down
+[Thu Jan  1 00:02:11 1970.867268] Menu: B -> down
+[Thu Jan  1 00:02:12 1970.031674] release B, func=vol_down, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:02:16 1970.058421] Button A pressed, func=vol_up
+[Thu Jan  1 00:02:16 1970.058902] Menu: A -> up
+[Thu Jan  1 00:02:16 1970.241726] release A, func=vol_up, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:02:16 1970.387410] Button A pressed, func=vol_up
+[Thu Jan  1 00:02:16 1970.387928] Menu: A -> up
+[Thu Jan  1 00:02:16 1970.554461] release A, func=vol_up, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:02:27 1970.566966] Button A pressed, func=vol_up
+[Thu Jan  1 00:02:27 1970.567442] Menu: A -> up
+[Thu Jan  1 00:02:27 1970.768974] release A, func=vol_up, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:02:27 1970.985690] Button A pressed, func=vol_up
+[Thu Jan  1 00:02:27 1970.986154] Menu: A -> up
+[Thu Jan  1 00:02:28 1970.183103] release A, func=vol_up, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:02:28 1970.424643] Button B pressed, func=vol_down
+[Thu Jan  1 00:02:28 1970.425110] Menu: B -> down
+[Thu Jan  1 00:02:28 1970.655009] release B, func=vol_down, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:02:28 1970.929097] Button B pressed, func=vol_down
+[Thu Jan  1 00:02:28 1970.929499] Menu: B -> down
+[Thu Jan  1 00:02:29 1970.181118] release B, func=vol_down, in_menu=1, menu_pressed=1
+[Thu Jan  1 00:02:44 1970.970404] Backlight off via bl_power
+[Thu Jan  1 00:02:44 1970.970835] Backlight off due to inactivity

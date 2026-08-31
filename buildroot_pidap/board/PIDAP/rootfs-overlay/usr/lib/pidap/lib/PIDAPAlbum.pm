@@ -16,6 +16,73 @@ our @EXPORT_OK = qw(
 our %EXPORT_TAGS = (all => \@EXPORT_OK);
 
 my %ALBUM_OFFSETS_CACHE = ();
+my $ALBUM_CACHE_FILE = $ENV{PIDAP_RUN_DIR} ? "$ENV{PIDAP_RUN_DIR}/pidap.generated.album_cache" : undef;
+
+sub _rebuild_offsets {
+    my ($durations) = @_;
+    my @offsets;
+    my $cum = 0;
+    for my $i (0 .. $#$durations) {
+        $offsets[$i] = $cum;
+        $cum += $durations->[$i];
+    }
+    return (\@offsets, $cum);
+}
+
+sub _load_album_cache {
+    my ($album) = @_;
+    return unless $ALBUM_CACHE_FILE && -r $ALBUM_CACHE_FILE;
+    open(my $cf, '<', $ALBUM_CACHE_FILE) or return;
+    my $in = 0;
+    my (@files, @durations);
+    while (<$cf>) {
+        chomp;
+        if (/^A\t(.+)$/) {
+            my $a = $1;
+            return if $in;  # reached next album, done with ours
+            $in = 1 if $a eq $album;
+            next;
+        }
+        next unless $in;
+        if (/^T\t(\d+)\t([0-9.]+)\t(.+)$/) {
+            my ($idx, $dur, $path) = ($1, $2, $3);
+            $files[$idx] = $path;
+            $durations[$idx] = $dur;
+        }
+    }
+    close($cf);
+    return unless @files;
+    my ($offsets, $cum) = _rebuild_offsets(\@durations);
+    return [\@files, \@durations, $offsets, $cum];
+}
+
+sub _save_album_cache {
+    my ($album, $files, $durations) = @_;
+    return unless $ALBUM_CACHE_FILE;
+    my $tmp = "$ALBUM_CACHE_FILE.tmp.$$";
+    open(my $new, '>', $tmp) or return;
+    if ($ALBUM_CACHE_FILE && -r $ALBUM_CACHE_FILE) {
+        if (open(my $old, '<', $ALBUM_CACHE_FILE)) {
+            my $skip = 0;
+            while (<$old>) {
+                chomp;
+                if (/^A\t(.+)$/) {
+                    $skip = ($1 eq $album) ? 1 : 0;
+                    print $new "$_\n" unless $skip;
+                    next;
+                }
+                print $new "$_\n" unless $skip;
+            }
+            close($old);
+        }
+    }
+    print $new "A\t$album\n";
+    for my $i (0 .. $#$files) {
+        print $new "T\t$i\t$durations->[$i]\t$files->[$i]\n";
+    }
+    close($new);
+    rename($tmp, $ALBUM_CACHE_FILE);
+}
 
 sub soxi_duration {
     my ($file) = @_;
@@ -27,6 +94,12 @@ sub soxi_duration {
 sub get_album_offsets {
     my ($album) = @_;
     return @{$ALBUM_OFFSETS_CACHE{$album}} if exists $ALBUM_OFFSETS_CACHE{$album};
+
+    my $cached = _load_album_cache($album);
+    if ($cached) {
+        $ALBUM_OFFSETS_CACHE{$album} = $cached;
+        return @{$cached};
+    }
 
     my @exts = qw(flac mp3 ogg m4a wav gsm amr);
     my @files;
@@ -47,6 +120,7 @@ sub get_album_offsets {
 
     my $result = [\@files, \@durations, \@offsets, $cum];
     $ALBUM_OFFSETS_CACHE{$album} = $result;
+    _save_album_cache($album, \@files, \@durations);
     return @{$result};
 }
 

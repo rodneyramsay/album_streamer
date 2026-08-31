@@ -35,7 +35,8 @@ while(<>) {
 
             ($last_artist, $last_album, $last_track) = ($artist, $album, $track);
 
-	    print "\n";
+	    # Print 3-line track block without a leading blank so the track name
+	    # stays on the last visible line and old blocks scroll down cleanly.
 	    print "$artist\n";
 	    print "${cue_num}\/${last_num}: ${album}\n";
 	    print "$track\n";

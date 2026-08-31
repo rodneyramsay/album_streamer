@@ -5,6 +5,7 @@ use lib "$FindBin::Bin/lib";
 use Time::HiRes;
 use IO::Select;
 use POSIX;
+use Fcntl;
 use PIDAPAlbum qw(get_album_offsets read_current_album);
 
 my $MENU_COLUMNS = 24;
@@ -28,6 +29,11 @@ my $menu_out_fifo       = "$RUN_DIR/pidap.generated.menu_out";
 sub log_warn {
     my ($msg) = @_;
     print STDERR "pidap-menu: $msg\n";
+}
+
+END {
+    # Always clean up the menu-mode flag if we exit for any reason.
+    unlink($menu_mode_file) if -e $menu_mode_file;
 }
 
 # Create the FIFOs on startup if they do not already exist.
@@ -464,21 +470,24 @@ sub run_menu {
         &restore_display();
     }
 
+    # Menu is closing; drop the flag immediately so buttons drop out of
+    # menu mode even if the result pipe is slow.
+    unlink($menu_mode_file) if -e $menu_mode_file;
+
     # Write the result back to the caller before returning.
-    if (open(my $out, '>', $menu_out_fifo)) {
+    # Open non-blocking so a missing reader cannot hang the menu process.
+    if (sysopen(my $out, $menu_out_fifo, O_WRONLY|O_NONBLOCK)) {
         if ($did_select) {
             log_warn("writing result: album=$result_album offset=$result_offset");
-            print $out "album=$result_album\toffset=$result_offset\n";
+            syswrite($out, "album=$result_album\toffset=$result_offset\n");
         } else {
             log_warn("writing result: cancel");
-            print $out "cancel=1\n";
+            syswrite($out, "cancel=1\n");
         }
         close($out);
     } else {
         log_warn("cannot write $menu_out_fifo: $!");
     }
-
-    unlink($menu_mode_file) if -e $menu_mode_file;
 }
 
 # Clean up a stale menu_mode file from a previous/crashed run.
