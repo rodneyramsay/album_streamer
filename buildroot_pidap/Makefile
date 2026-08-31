@@ -95,3 +95,19 @@ sdcard-data: check-data
 	-for p in 1 2 3; do sudo umount $(CARD)$$p 2>/dev/null || true; done
 	make -C $(BUILDROOT_DIR)
 	sudo CARD=$(CARD) ./flash-sdcard.sh data
+
+# Prepare a card with a sensibly small user-data partition.  If
+# MAX_USERDATA_G is 0 (the default) the cap is computed from the card size.
+sdcard-prep: check
+	@cap=$(MAX_USERDATA_G); \
+	if [ "$$cap" = "0" ]; then \
+		size=$$(sudo blockdev --getsize64 $(CARD)); \
+		gb=$$(( size / 1024 / 1024 / 1024 )); \
+		cap=$$(( gb / 4 )); \
+		[ $$cap -lt 1 ] && cap=1; \
+		[ $$cap -gt 4 ] && cap=4; \
+		echo "Detected $${gb} GiB card; capping user-data at $${cap} GiB"; \
+	else \
+		echo "Using requested user-data cap: $${cap} GiB"; \
+	fi; \
+	$(MAKE) CARD=$(CARD) MAX_USERDATA_G=$$cap sdcard

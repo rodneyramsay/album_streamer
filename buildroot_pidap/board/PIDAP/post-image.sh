@@ -17,8 +17,16 @@ if [ -x "${DTC}" ] && [ -f "${BOARD_DIR}/pirate-tft.dts" ]; then
     "${DTC}" -@ -I dts -O dtb -o "${BINARIES_DIR}/rpi-firmware/overlays/pirate-tft.dtbo" "${BOARD_DIR}/pirate-tft.dts"
 fi
 
-# Use the project's custom cmdline.txt on the boot partition
-cp -f "${BOARD_DIR}/cmdline.txt" "${BINARIES_DIR}/rpi-firmware/cmdline.txt"
+# Use the project's custom cmdline on the boot partition.
+# Pick the SD-card cmdline if the active defconfig selected it.
+BUILDROOT_DIR=$(dirname "$(dirname "$BINARIES_DIR")")
+if [ -f "${BUILDROOT_DIR}/.config" ] && \
+   grep -q 'BR2_PACKAGE_RPI_FIRMWARE_CMDLINE_FILE=.*cmdline-sd' "${BUILDROOT_DIR}/.config"; then
+    CMDLINE_FILE="${BOARD_DIR}/cmdline-sd.txt"
+else
+    CMDLINE_FILE="${BOARD_DIR}/cmdline.txt"
+fi
+cp -f "${CMDLINE_FILE}" "${BINARIES_DIR}/rpi-firmware/cmdline.txt"
 
 # generate genimage from template if a board specific variant doesn't exists
 if [ ! -e "${GENIMAGE_CFG}" ]; then

@@ -7,6 +7,10 @@ make -C /home/rodney/buildroot
 make -C /home/rodney/album_streamer/buildroot_pidap CARD=/dev/sdg sdcard-boot
 # Boot + rootfs only, leaving user-data alone:
 make -C /home/rodney/album_streamer/buildroot_pidap CARD=/dev/sdg sdcard-system
+# Auto-size user-data for large cards (caps at 4 GiB by default):
+make -C /home/rodney/album_streamer/buildroot_pidap CARD=/dev/sdg sdcard-prep
+# Force a specific user-data size:
+make -C /home/rodney/album_streamer/buildroot_pidap CARD=/dev/sdg MAX_USERDATA_G=8 sdcard-prep
 ```
 
 ## Known Runtime Settings
