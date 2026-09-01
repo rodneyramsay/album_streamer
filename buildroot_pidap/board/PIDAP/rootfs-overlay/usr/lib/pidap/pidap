@@ -99,10 +99,9 @@ if($led_brightness && !$led_trigger) {
 
 unlink($play_pid_file) if(-e $play_pid_file);
 
-my $boot_mode = $build_only ? &read_boot_gpio() : '';
+my $boot_mode = '';
 
 if ($ENV{PIDAP_NO_SYSTEMD} && !$build_only) {
-    &build_playlist();
     &start_menu();
 }
 
@@ -139,6 +138,7 @@ my $resume_offset = 0;
 #
 my $boot_applied = 0;
 my $sorted_playlist = 0;
+my $no_playlist_warned = 0;
 
 
 while($run) {
@@ -147,8 +147,10 @@ while($run) {
 
    @play_albums = &read_playlist_file($playlist_file);
    unless (@play_albums) {
-      print "No playlist file ($playlist_file) available, cannot play\n";
-      exit(1);
+      print "No playlist file ($playlist_file) available, cannot play\n" unless $no_playlist_warned;
+      $no_playlist_warned = 1;
+      sleep 1;
+      next;
    }
 
    ($resume_album, $resume_offset) = &read_resume;

@@ -69,36 +69,36 @@ check-data:
 	'
 
 
-sdcard: check
+sdcard: defconfig check
 	-for p in 1 2 3; do sudo umount $(CARD)$$p 2>/dev/null || true; done
-	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)"
+	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)" BR2_EXTERNAL=$(BR2_EXTERNAL)
 	sudo CARD=$(CARD) MAX_USERDATA_G=$(MAX_USERDATA_G) ./flash-sdcard.sh all
 	@if [ "$(DEPLOY_NFS)" = "1" ]; then \
 		sudo ./deploy-nfs.sh; \
 		ssh-keygen -f /home/rodney/.ssh/known_hosts -R 192.168.0.31 2>/dev/null || true; \
 	fi
 
-sdcard-boot: check
+sdcard-boot: defconfig check
 	-for p in 1 2 3; do sudo umount $(CARD)$$p 2>/dev/null || true; done
-	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)"
+	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)" BR2_EXTERNAL=$(BR2_EXTERNAL)
 	sudo dd if=$(BUILDROOT_DIR)/output/images/boot.vfat of=$(CARD)1 bs=4M status=progress conv=fsync
 	@if [ "$(DEPLOY_NFS)" = "1" ]; then \
 		sudo ./deploy-nfs.sh; \
 		ssh-keygen -f /home/rodney/.ssh/known_hosts -R 192.168.0.31 2>/dev/null || true; \
 	fi
 
-sdcard-system: check
+sdcard-system: defconfig check
 	-for p in 1 2 3; do sudo umount $(CARD)$$p 2>/dev/null || true; done
-	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)"
+	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)" BR2_EXTERNAL=$(BR2_EXTERNAL)
 	cp $(BUILDROOT_DIR)/output/images/boot.vfat $(BUILDROOT_DIR)/output/images/boot-sd.vfat
 	MTOOLS_SKIP_CHECK=1 mcopy -o -i $(BUILDROOT_DIR)/output/images/boot-sd.vfat $(BR2_EXTERNAL)/board/PIDAP/cmdline-sd.txt ::cmdline.txt
 	sudo dd if=$(BUILDROOT_DIR)/output/images/boot-sd.vfat of=$(CARD)1 bs=4M status=progress conv=fsync
 	rm -f $(BUILDROOT_DIR)/output/images/boot-sd.vfat
 	sudo dd if=$(BUILDROOT_DIR)/output/images/rootfs.ext2 of=$(CARD)2 bs=4M status=progress conv=fsync
 
-sdcard-data: check-data
+sdcard-data: defconfig check-data
 	-for p in 1 2 3; do sudo umount $(CARD)$$p 2>/dev/null || true; done
-	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)"
+	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)" BR2_EXTERNAL=$(BR2_EXTERNAL)
 	sudo CARD=$(CARD) ./flash-sdcard.sh data
 
 # Prepare a card with a sensibly small user-data partition.  If
