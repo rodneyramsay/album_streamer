@@ -5,6 +5,11 @@ CARD       ?= /dev/sdg
 # Cap the user-data partition to this many GiB (0 = use rest of the card).
 MAX_USERDATA_G ?= 0
 
+# Music to bundle into the user-data partition image during build.
+# The default source is the NAS library; override if your music lives elsewhere.
+MUSIC_SOURCE  ?= /mnt/wd_my_cloud/Music
+MUSIC_INCLUDE ?= Rock/Who/Tommy
+
 # Config selection: either override DEFCONFIG, or set both MODEL and PROFILE.
 MODEL   ?=
 PROFILE ?=
@@ -22,10 +27,10 @@ list-configs:
 
 defconfig:
 	@test -f $(BR2_EXTERNAL)/configs/$(DEFCONFIG) || { echo "No such defconfig: configs/$(DEFCONFIG)"; exit 1; }
-	make -C $(BUILDROOT_DIR) BR2_EXTERNAL=$(BR2_EXTERNAL) $(DEFCONFIG)
+	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)" BR2_EXTERNAL=$(BR2_EXTERNAL) $(DEFCONFIG)
 
 nfs:
-	make -C $(BUILDROOT_DIR)
+	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)"
 	sudo ./deploy-nfs.sh
 
 
@@ -66,7 +71,7 @@ check-data:
 
 sdcard: check
 	-for p in 1 2 3; do sudo umount $(CARD)$$p 2>/dev/null || true; done
-	make -C $(BUILDROOT_DIR)
+	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)"
 	sudo CARD=$(CARD) MAX_USERDATA_G=$(MAX_USERDATA_G) ./flash-sdcard.sh all
 	@if [ "$(DEPLOY_NFS)" = "1" ]; then \
 		sudo ./deploy-nfs.sh; \
@@ -75,7 +80,7 @@ sdcard: check
 
 sdcard-boot: check
 	-for p in 1 2 3; do sudo umount $(CARD)$$p 2>/dev/null || true; done
-	make -C $(BUILDROOT_DIR)
+	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)"
 	sudo dd if=$(BUILDROOT_DIR)/output/images/boot.vfat of=$(CARD)1 bs=4M status=progress conv=fsync
 	@if [ "$(DEPLOY_NFS)" = "1" ]; then \
 		sudo ./deploy-nfs.sh; \
@@ -84,7 +89,7 @@ sdcard-boot: check
 
 sdcard-system: check
 	-for p in 1 2 3; do sudo umount $(CARD)$$p 2>/dev/null || true; done
-	make -C $(BUILDROOT_DIR)
+	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)"
 	cp $(BUILDROOT_DIR)/output/images/boot.vfat $(BUILDROOT_DIR)/output/images/boot-sd.vfat
 	MTOOLS_SKIP_CHECK=1 mcopy -o -i $(BUILDROOT_DIR)/output/images/boot-sd.vfat $(BR2_EXTERNAL)/board/PIDAP/cmdline-sd.txt ::cmdline.txt
 	sudo dd if=$(BUILDROOT_DIR)/output/images/boot-sd.vfat of=$(CARD)1 bs=4M status=progress conv=fsync
@@ -93,7 +98,7 @@ sdcard-system: check
 
 sdcard-data: check-data
 	-for p in 1 2 3; do sudo umount $(CARD)$$p 2>/dev/null || true; done
-	make -C $(BUILDROOT_DIR)
+	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)"
 	sudo CARD=$(CARD) ./flash-sdcard.sh data
 
 # Prepare a card with a sensibly small user-data partition.  If
@@ -110,4 +115,4 @@ sdcard-prep: check
 	else \
 		echo "Using requested user-data cap: $${cap} GiB"; \
 	fi; \
-	$(MAKE) CARD=$(CARD) MAX_USERDATA_G=$$cap sdcard
+	$(MAKE) CARD=$(CARD) MAX_USERDATA_G=$$cap MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)" sdcard
