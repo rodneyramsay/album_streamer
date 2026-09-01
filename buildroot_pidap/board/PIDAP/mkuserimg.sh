@@ -16,7 +16,7 @@ set -e
 : "${BINARIES_DIR:?}"
 : "${BUILD_DIR:?}"
 
-MUSIC_SOURCE="${MUSIC_SOURCE:-/mnt/wd_my_cloud/FLAC32G_A}"
+MUSIC_SOURCE="${MUSIC_SOURCE:-/mnt/wd_my_cloud/Music}"
 MUSIC_INCLUDE="${MUSIC_INCLUDE:-Rock/Who/Tommy}"
 # Leave USERDATA_SIZE unset to size to the selected music + 20%.
 USERDATA_SIZE="${USERDATA_SIZE:-}"
