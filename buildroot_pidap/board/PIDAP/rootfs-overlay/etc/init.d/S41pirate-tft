@@ -15,14 +15,14 @@ case "$1" in
         # The panel driver may have deferred because the backlight was not ready.
         # Load gpio-backlight, then remove and re-insert the panel so it re-probes.
         modprobe gpio_backlight 2>/dev/null || modprobe gpio-backlight 2>/dev/null || true
-        sleep 0.2
+        sleep 0.1
         modprobe -r panel_mipi_dbi 2>/dev/null || modprobe -r panel-mipi-dbi 2>/dev/null || true
         modprobe panel_mipi_dbi 2>/dev/null || modprobe panel-mipi-dbi 2>/dev/null || true
 
         # Give the panel time to probe and create /dev/fb1.
-        for i in $(seq 1 30); do
+        for i in $(seq 1 20); do
             [ -e /dev/fb1 ] && break
-            sleep 0.2
+            sleep 0.1
         done
 
         if [ -e /dev/fb1 ]; then

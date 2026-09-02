@@ -149,7 +149,7 @@ while($run) {
    unless (@play_albums) {
       print "No playlist file ($playlist_file) available, cannot play\n" unless $no_playlist_warned;
       $no_playlist_warned = 1;
-      sleep 1;
+      sleep 0.2;
       next;
    }
 
