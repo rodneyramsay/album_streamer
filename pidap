@@ -16,6 +16,10 @@ unless (-t STDOUT || $ENV{PIDAP_DEBUG}) {
    open(STDOUT, '>', '/dev/null') or die "cannot redirect STDOUT: $!";
    open(STDERR, '>&STDOUT') or die "cannot redirect STDERR: $!";
 }
+if ($ENV{PIDAP_DEBUG}) {
+   select((select(STDOUT), $| = 1)[0]);
+   select((select(STDERR), $| = 1)[0]);
+}
 
 #
 # Event notification pipe.  SIGCHLD, SIGUSR1 and SIGUSR2 write a byte to the

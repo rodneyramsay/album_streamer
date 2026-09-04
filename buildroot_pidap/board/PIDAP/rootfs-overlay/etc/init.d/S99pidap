@@ -9,8 +9,10 @@ case "$1" in
         export PIDAP_INITIAL_VOLUME=40
         export PIDAP_RUN_DIR=/run/pidap
         export PIDAP_DATA_DIR=/var/lib/pidap
-        mkdir -p "$PIDAP_RUN_DIR"
-        /sbin/start-stop-daemon -S -b -m -p "$PIDFILE" -x "$DAEMON"
+        export PIDAP_DEBUG=1
+        mkdir -p "$PIDAP_RUN_DIR" "$PIDAP_DATA_DIR"
+        rm -f "$PIDAP_DATA_DIR/pidap.debug"
+        /sbin/start-stop-daemon -S -b -m -p "$PIDFILE" -x "$DAEMON" -O "$PIDAP_DATA_DIR/pidap.debug"
         ;;
     stop)
         /sbin/start-stop-daemon -K -p "$PIDFILE" 2>/dev/null || true
