@@ -12,7 +12,11 @@ export PIDAP_DATA_SIZE_M
 # Music to bundle into the user-data partition image during build.
 # The default source is the NAS library; override if your music lives elsewhere.
 MUSIC_SOURCE  ?= /mnt/wd_my_cloud/Music
-MUSIC_INCLUDE ?= Rock/Who/Tommy
+MUSIC_INCLUDE ?=
+# File with one relative path per line; overrides MUSIC_INCLUDE if it exists.
+MUSIC_INCLUDE_FILE ?= $(BR2_EXTERNAL)music-include.txt
+
+export MUSIC_INCLUDE_FILE MUSIC_INCLUDE MUSIC_SOURCE
 
 # Config selection: either override DEFCONFIG, or set both MODEL and PROFILE.
 MODEL   ?=

@@ -1,0 +1,7 @@
+# Directories to bundle into the SD card's user-data (music) partition.
+# Paths are relative to MUSIC_SOURCE (default /mnt/wd_my_cloud/Music).
+Vinyl/Dire_Straits/Communique
+Vinyl/Dire_Straits/Dire_Straits
+Vinyl/Dire_Straits/Love_Over_Gold
+Vinyl/Dire_Straits/Making_Movies
+Jam/Grateful_Dead_02/840722
