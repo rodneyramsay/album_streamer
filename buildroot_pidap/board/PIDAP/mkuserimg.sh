@@ -64,19 +64,19 @@ if [ ${#INCLUDES[@]} -gt 0 ]; then
 
     if [ -z "${USERDATA_SIZE}" ]; then
         if [ "${DATA_BYTES}" -gt 0 ]; then
-            # data + 20% headroom, round up to 64 MiB, minimum 1 GiB
+            # data + 20% headroom, round up to 64 MiB, minimum 128 MiB
             WANTED=$(( DATA_BYTES + DATA_BYTES / 5 ))
             WANTED=$(( (WANTED + 67108863) / 67108864 * 67108864 ))
-            MIN=$(( 1 * 1024 * 1024 * 1024 ))
+            MIN=$(( 128 * 1024 * 1024 ))
             [ "${WANTED}" -lt "${MIN}" ] && WANTED=${MIN}
             IMAGE_SIZE="${WANTED}"
         else
-            IMAGE_SIZE="1073741824"  # 1 GiB
+            IMAGE_SIZE="134217728"  # 128 MiB
         fi
     fi
 else
     if [ -z "${USERDATA_SIZE}" ]; then
-        IMAGE_SIZE="1073741824"  # 1 GiB
+        IMAGE_SIZE="134217728"  # 128 MiB
     fi
     echo "No music includes specified, creating empty user-data partition"
 fi

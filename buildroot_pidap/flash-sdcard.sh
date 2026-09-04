@@ -44,14 +44,23 @@ ROOTFS_BYTES=$(wc -c < "${IMAGES_DIR}/rootfs.ext2")
 ROOTFS_M=$(( (ROOTFS_BYTES + 1048575) / 1048576 + 10 ))
 ROOTFS_PART_M=$(( ROOTFS_M - PIDAP_DATA_SIZE_M ))
 
-# Optional user-data partition cap in GiB (0 = use rest of the card).
+# Optional user-data partition cap in GiB (0 = size the partition to the image).
 MAX_USERDATA_G="${MAX_USERDATA_G:-0}"
+USERDATA_IMG_BYTES=$(wc -c < "${IMAGES_DIR}/user-data.ext4")
+USERDATA_IMG_M=$(( (USERDATA_IMG_BYTES + 1048575) / 1048576 ))
+# Add a small margin for VFAT filesystem overhead / rounding.
+USERDATA_PART_M=$(( USERDATA_IMG_M + 64 ))
 if [ "${MAX_USERDATA_G}" -gt 0 ] 2>/dev/null; then
-    USERDATA_SIZE_SFDISK="$(( MAX_USERDATA_G * 1024 ))M"
-    echo "Capping user-data partition to ${MAX_USERDATA_G} GiB"
+    CAP_M=$(( MAX_USERDATA_G * 1024 ))
+    if [ "${USERDATA_PART_M}" -gt "${CAP_M}" ]; then
+        echo "Warning: user-data partition needs ${USERDATA_PART_M}M but cap is ${CAP_M}M; using ${USERDATA_PART_M}M"
+    else
+        echo "User-data partition cap is ${CAP_M}M; image fits in ${USERDATA_PART_M}M"
+    fi
 else
-    USERDATA_SIZE_SFDISK=""
+    echo "Sizing user-data partition to ${USERDATA_PART_M}M (image + 64M margin)"
 fi
+USERDATA_SIZE_SFDISK="${USERDATA_PART_M}M"
 
 echo "Flashing ${CARD}..."
 
