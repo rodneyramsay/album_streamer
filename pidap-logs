@@ -1,6 +1,7 @@
 #!/bin/sh
 
-LOG_DIR="/usr/local/Music/pidap-logs"
+PIDAP_DATA_DIR="${PIDAP_DATA_DIR:-/var/lib/pidap}"
+LOG_DIR="${PIDAP_DATA_DIR}/pidap-logs"
 TMP_DIR="/tmp/pidap-logs-$$"
 
 mkdir -p "$TMP_DIR" || { echo "Cannot create temp dir" >&2; exit 1; }
