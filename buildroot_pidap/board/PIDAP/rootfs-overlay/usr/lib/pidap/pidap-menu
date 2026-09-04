@@ -6,6 +6,7 @@ use Time::HiRes;
 use IO::Select;
 use POSIX;
 use Fcntl;
+use Errno qw(ENXIO ENOENT);
 use PIDAPAlbum qw(get_album_offsets read_current_album);
 use PIDAPRand;
 
@@ -569,10 +570,24 @@ sub run_menu {
     # menu mode even if the result pipe is slow.
     unlink($menu_mode_file) if -e $menu_mode_file;
 
-    # Write the result back to the caller through the FIFO.
+    # Write the result back to the caller through the FIFO.  Retry briefly
+    # in case pidap hasn't opened the reader side yet.
     my $result = $did_select ? "album=$result_album\toffset=$result_offset" : "cancel=1";
     log_warn("writing result: $result");
-    if (sysopen(my $out, $menu_out_fifo, O_WRONLY|O_NONBLOCK)) {
+    my $out;
+    my $opened = 0;
+    for my $try (1 .. 10) {
+        if (sysopen($out, $menu_out_fifo, O_WRONLY|O_NONBLOCK)) {
+            $opened = 1;
+            last;
+        }
+        if ($!{ENXIO} || $!{ENOENT}) {
+            Time::HiRes::usleep(50_000);
+            next;
+        }
+        last;
+    }
+    if ($opened) {
         syswrite($out, "$result\n");
         close($out);
     } else {

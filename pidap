@@ -894,7 +894,16 @@ sub play_albums() {
  my $volume_initialized = 0;
  my %album_offsets_cache = ();
  my $menu_out_fh;
- sysopen($menu_out_fh, "$RUN_DIR/pidap.generated.menu_out", O_RDWR|O_NONBLOCK) or warn "cannot open menu_out FIFO: $!";
+ my $menu_out_fifo = "$RUN_DIR/pidap.generated.menu_out";
+ if (-e $menu_out_fifo && !-p $menu_out_fifo) {
+     unlink($menu_out_fifo);
+ }
+ unless (-p $menu_out_fifo) {
+     POSIX::mkfifo($menu_out_fifo, 0666) or warn "cannot create menu_out FIFO $menu_out_fifo: $!";
+ }
+ unless (sysopen($menu_out_fh, $menu_out_fifo, O_RDWR|O_NONBLOCK)) {
+     warn "cannot open menu_out FIFO $menu_out_fifo: $!";
+ }
  my $pause_fh;
  my $pause_fifo = "$RUN_DIR/pidap.generated.pause";
  if (-e $pause_fifo && !-p $pause_fifo) {
