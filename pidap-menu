@@ -5,7 +5,9 @@ use lib "$FindBin::Bin/lib";
 use Time::HiRes;
 use IO::Select;
 use POSIX;
+use Fcntl;
 use PIDAPAlbum qw(get_album_offsets read_current_album);
+use PIDAPRand;
 
 my $MENU_COLUMNS = 24;
 my $MENU_ITEM_MAX  = $MENU_COLUMNS - 1;
@@ -18,16 +20,41 @@ if ($ENV{PIDAP_RUN_DIR} && !-d $RUN_DIR) {
     system('mkdir', '-p', $RUN_DIR) == 0 or die "cannot create $RUN_DIR: $!\n";
 }
 
-my $playlist_file       = "$RUN_DIR/pidap.generated.playlist";
-my $current_album_file  = "$RUN_DIR/pidap.generated.current_album";
+my $DATA_DIR = $ENV{PIDAP_DATA_DIR} || $RUN_DIR;
+if ($ENV{PIDAP_DATA_DIR} && !-d $DATA_DIR) {
+    system('mkdir', '-p', $DATA_DIR) == 0 or die "cannot create $DATA_DIR: $!\n";
+}
+
+my $playlist_file       = "$DATA_DIR/pidap.generated.playlist";
+my $current_album_file  = "$DATA_DIR/pidap.generated.current_album";
 my $display_buffer_file = "$RUN_DIR/pidap.generated.display";
 my $menu_mode_file      = "$RUN_DIR/pidap.generated.menu_mode";
 my $menu_in_fifo        = "$RUN_DIR/pidap.generated.menu_in";
 my $menu_out_fifo       = "$RUN_DIR/pidap.generated.menu_out";
+my $play_pid_file       = "$RUN_DIR/pidap.generated.play_pid";
 
 sub log_warn {
     my ($msg) = @_;
     print STDERR "pidap-menu: $msg\n";
+}
+
+sub restart_playback {
+    return unless -r $play_pid_file;
+    if (open(my $pf, '<', $play_pid_file)) {
+        my $pid = <$pf>;
+        close($pf);
+        chomp($pid) if defined $pid;
+        if ($pid && $pid =~ /^\d+$/ && kill(0, $pid)) {
+            # Kill the current play process; pidap will see it exit and
+            # restart from the beginning of the newly generated playlist.
+            kill('TERM', $pid);
+        }
+    }
+}
+
+END {
+    # Always clean up the menu-mode flag if we exit for any reason.
+    unlink($menu_mode_file) if -e $menu_mode_file;
 }
 
 # Create the FIFOs on startup if they do not already exist.
@@ -166,7 +193,8 @@ sub run_menu {
     my ($albums_ref, $current_album_idx) = @_;
 
     my @albums = @$albums_ref;
-    $current_album_idx = 0 if $current_album_idx < 0 || $current_album_idx > $#albums;
+    my $no_albums = !@albums;
+    $current_album_idx = 0 if !$no_albums && ($current_album_idx < 0 || $current_album_idx > $#albums);
 
     my ($current_album, $current_offset) = read_current_album($current_album_file);
     $current_offset ||= 0;
@@ -227,14 +255,20 @@ sub run_menu {
 
     my ($track_files, $track_durations, $track_offsets);
     my $current_track_idx = 0;
-    ($track_files, $track_durations, $track_offsets) = &get_album_offsets($albums[$current_album_idx]);
-    if ($track_durations && @$track_durations) {
-        my $cum = 0;
-        for my $i (0 .. $#$track_durations) {
-            $cum += $track_durations->[$i];
-            if ($cum > $current_offset) {
-                $current_track_idx = $i;
-                last;
+    if ($no_albums) {
+        $track_files = [];
+        $track_durations = [];
+        $track_offsets = [];
+    } else {
+        ($track_files, $track_durations, $track_offsets) = &get_album_offsets($albums[$current_album_idx]);
+        if ($track_durations && @$track_durations) {
+            my $cum = 0;
+            for my $i (0 .. $#$track_durations) {
+                $cum += $track_durations->[$i];
+                if ($cum > $current_offset) {
+                    $current_track_idx = $i;
+                    last;
+                }
             }
         }
     }
@@ -246,8 +280,8 @@ sub run_menu {
     my $album_in_artist_idx = $current_album_in_artist_idx;
     my $album_idx = $current_album_idx;
     my $track_album_idx = $album_idx;
-    my $level = 3;
-    my $selected = $current_track_idx;
+    my $level = $no_albums ? 0 : 3;
+    my $selected = $no_albums ? 0 : $current_track_idx;
     my @items;
     my $title = '';
     my $did_select = 0;
@@ -257,9 +291,11 @@ sub run_menu {
     my $hscroll_selected = -1;
     my $hscroll_last = 0;
 
+    my $in_system = 0;
     my $in_playlist = 0;
+    my $in_playlist_menu = 0;
     my $playlist_album_idx = $current_album_idx;
-    my $top_selected = $current_genre_idx + 1;
+    my $top_selected = $current_genre_idx + 2;
 
     my $sel = IO::Select->new(\*MENU_IN);
 
@@ -271,14 +307,15 @@ sub run_menu {
     }
 
     while (1) {
-        if ($level == 0) {
-            @items = ('Playlist', map { my $p = $_; $p =~ s{^.*/}{}; $p; } @genres);
-            if ($selected == 0) {
-                $title = 'Playlist';
-            } else {
-                $title = $genres[$selected - 1] // '';
-                $title =~ s{^.*/}{};
-            }
+        if ($in_playlist_menu) {
+            @items = ('Browse Playlist', 'Restart List Jump', 'Random List Jump', 'Generate Random Playlist', 'Generate Alpha-numeric Playlist');
+            $title = 'Playlist';
+        } elsif ($in_system) {
+            @items = ('Generate Logs');
+            $title = 'System';
+        } elsif ($level == 0) {
+            @items = ('System', 'Playlist', map { my $p = $_; $p =~ s{^.*/}{}; $p; } @genres);
+            $title = '';
         } elsif ($level == 1) {
             my $artists_for = $genre_artist_lists[$genre_idx];
             @items = map { my $p = $_; $p =~ s{^.*/}{}; $p; } @$artists_for;
@@ -369,7 +406,17 @@ sub run_menu {
         if (!$action) {
             last;
         } elsif ($action eq 'back') {
-            if ($level == 0) {
+            if ($in_playlist_menu) {
+                $in_playlist_menu = 0;
+                $level = 0;
+                $selected = 1;
+                next;
+            } elsif ($in_system) {
+                $in_system = 0;
+                $level = 0;
+                $selected = 0;
+                next;
+            } elsif ($level == 0) {
                 last;
             } elsif ($level == 1) {
                 $level = 0;
@@ -378,8 +425,9 @@ sub run_menu {
             } elsif ($level == 2) {
                 if ($in_playlist) {
                     $level = 0;
-                    $selected = 0;
                     $in_playlist = 0;
+                    $in_playlist_menu = 1;
+                    $selected = 0;
                 } else {
                     $selected = $album_in_artist_idx;
                     $level = 1;
@@ -400,15 +448,64 @@ sub run_menu {
         } elsif ($action eq 'down') {
             $selected = ($selected < $#items) ? $selected + 1 : 0;
         } elsif ($action eq 'select') {
-            if ($level == 0) {
+            if ($in_playlist_menu) {
                 if ($selected == 0) {
+                    # Browse Playlist: show the album/track list
                     $in_playlist = 1;
                     $level = 2;
                     $playlist_album_idx = $current_album_idx;
                     $album_idx = $playlist_album_idx;
                     $selected = $playlist_album_idx;
+                } elsif ($selected == 1) {
+                    # Restart List: jump to the first album/track
+                    $album_idx = 0;
+                    $selected = 0;
+                    ($track_files, $track_durations, $track_offsets) = &get_album_offsets($albums[$album_idx]);
+                    $track_album_idx = $album_idx;
+                    $did_select = 1;
+                    last;
+                } elsif ($selected == 2) {
+                    # Random List: jump to a random album, track 0
+                    $album_idx = int(rand(scalar(@albums)));
+                    $selected = 0;
+                    ($track_files, $track_durations, $track_offsets) = &get_album_offsets($albums[$album_idx]);
+                    $track_album_idx = $album_idx;
+                    $did_select = 1;
+                    last;
+                } elsif ($selected == 3) {
+                    &display_menu_list('Generating...', ['Generate Random Playlist'], 0, 13);
+                    system('perl', "$FindBin::Bin/pidap-playlist", '-r') == 0
+                        or log_warn('pidap-playlist -r failed');
+                    &display_menu_list('Done', ['Random Playlist Location'], 0, 13);
+                    sleep 1;
+                    &restart_playback();
+                    last;
                 } else {
-                    $genre_idx = $selected - 1;
+                    &display_menu_list('Generating...', ['Generate Alpha-numeric Playlist'], 0, 13);
+                    system('perl', "$FindBin::Bin/pidap-playlist", '-s') == 0
+                        or log_warn('pidap-playlist -s failed');
+                    &display_menu_list('Done', ['Alpha-Numeric Playlist'], 0, 13);
+                    sleep 1;
+                    &restart_playback();
+                    last;
+                }
+            } elsif ($in_system) {
+                &display_menu_list('Collecting...', ['Generate Logs'], 0, 13);
+                my $log_dir = `"$FindBin::Bin/pidap-logs"`;
+                chomp($log_dir) if defined $log_dir;
+                $log_dir ||= 'unknown';
+                &display_menu_list('Done', ["Logs: $log_dir"], 0, 13);
+                sleep 1;
+                last;
+            } elsif ($level == 0) {
+                if ($selected == 0) {
+                    $in_system = 1;
+                    $selected = 0;
+                } elsif ($selected == 1) {
+                    $in_playlist_menu = 1;
+                    $selected = 0;
+                } else {
+                    $genre_idx = $selected - 2;
                     $top_selected = $selected;
                     $level = 1;
                     $artist_in_genre_idx = ($genre_idx == $current_genre_idx) ? $current_artist_in_genre_idx : 0;
@@ -464,22 +561,24 @@ sub run_menu {
         &restore_display();
     }
 
+    # Menu is closing; drop the flag immediately so buttons drop out of
+    # menu mode even if the result pipe is slow.
+    unlink($menu_mode_file) if -e $menu_mode_file;
+
     # Write the result back to the caller before returning.
-    if (open(my $out, '>', $menu_out_fifo)) {
+    # Open non-blocking so a missing reader cannot hang the menu process.
+    if (sysopen(my $out, $menu_out_fifo, O_WRONLY|O_NONBLOCK)) {
         if ($did_select) {
             log_warn("writing result: album=$result_album offset=$result_offset");
-            print $out "album=$result_album\n";
-            print $out "offset=$result_offset\n";
+            syswrite($out, "album=$result_album\toffset=$result_offset\n");
         } else {
             log_warn("writing result: cancel");
-            print $out "cancel=1\n";
+            syswrite($out, "cancel=1\n");
         }
         close($out);
     } else {
         log_warn("cannot write $menu_out_fifo: $!");
     }
-
-    unlink($menu_mode_file) if -e $menu_mode_file;
 }
 
 # Clean up a stale menu_mode file from a previous/crashed run.
@@ -501,8 +600,7 @@ while (1) {
 
     my @play_albums = read_playlist_file($playlist_file);
     unless (@play_albums) {
-        log_warn("No playlist file ($playlist_file) available, cannot show menu");
-        next;
+        log_warn("No playlist file, showing generate menu");
     }
 
     my ($current_album, $current_offset) = read_current_album($current_album_file);
@@ -516,3 +614,4 @@ while (1) {
 
     run_menu(\@play_albums, $current_album_idx);
 }
+ 

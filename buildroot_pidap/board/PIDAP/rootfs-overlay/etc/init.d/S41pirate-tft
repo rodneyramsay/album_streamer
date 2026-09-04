@@ -12,11 +12,8 @@ case "$1" in
             exit 0
         fi
 
-        # The panel driver may have deferred because the backlight was not ready.
-        # Load gpio-backlight, then remove and re-insert the panel so it re-probes.
+        # Load the backlight and panel drivers.
         modprobe gpio_backlight 2>/dev/null || modprobe gpio-backlight 2>/dev/null || true
-        sleep 0.1
-        modprobe -r panel_mipi_dbi 2>/dev/null || modprobe -r panel-mipi-dbi 2>/dev/null || true
         modprobe panel_mipi_dbi 2>/dev/null || modprobe panel-mipi-dbi 2>/dev/null || true
 
         # Give the panel time to probe and create /dev/fb1.
@@ -26,8 +23,6 @@ case "$1" in
         done
 
         if [ -e /dev/fb1 ]; then
-            # Virtual console 1 -> fb1 is already mapped by the kernel
-            # (fbcon=map:1 on the cmdline), so con2fbmap is not needed.
             # Use Terminus 10x18 so the 24-column, 13-line pidap-menu fills the 240x240 screen
             if [ -f /usr/share/consolefonts/Uni2-Terminus18x10.psf.gz ]; then
                 setfont -C /dev/tty1 /usr/share/consolefonts/Uni2-Terminus18x10.psf.gz

@@ -7,6 +7,7 @@ use IO::Select;
 use POSIX;
 use Fcntl;
 use PIDAPAlbum qw(get_album_offsets read_current_album);
+use PIDAPRand;
 
 my $MENU_COLUMNS = 24;
 my $MENU_ITEM_MAX  = $MENU_COLUMNS - 1;
@@ -19,8 +20,13 @@ if ($ENV{PIDAP_RUN_DIR} && !-d $RUN_DIR) {
     system('mkdir', '-p', $RUN_DIR) == 0 or die "cannot create $RUN_DIR: $!\n";
 }
 
-my $playlist_file       = "$RUN_DIR/pidap.generated.playlist";
-my $current_album_file  = "$RUN_DIR/pidap.generated.current_album";
+my $DATA_DIR = $ENV{PIDAP_DATA_DIR} || $RUN_DIR;
+if ($ENV{PIDAP_DATA_DIR} && !-d $DATA_DIR) {
+    system('mkdir', '-p', $DATA_DIR) == 0 or die "cannot create $DATA_DIR: $!\n";
+}
+
+my $playlist_file       = "$DATA_DIR/pidap.generated.playlist";
+my $current_album_file  = "$DATA_DIR/pidap.generated.current_album";
 my $display_buffer_file = "$RUN_DIR/pidap.generated.display";
 my $menu_mode_file      = "$RUN_DIR/pidap.generated.menu_mode";
 my $menu_in_fifo        = "$RUN_DIR/pidap.generated.menu_in";
@@ -286,8 +292,8 @@ sub run_menu {
     my $hscroll_last = 0;
 
     my $in_system = 0;
-    my $system_level = 0;
     my $in_playlist = 0;
+    my $in_playlist_menu = 0;
     my $playlist_album_idx = $current_album_idx;
     my $top_selected = $current_genre_idx + 2;
 
@@ -301,22 +307,14 @@ sub run_menu {
     }
 
     while (1) {
-        if ($in_system) {
-            if ($system_level == 0) {
-                @items = ('Generate Playlist', 'Generate Logs');
-                $title = 'System';
-            } elsif ($system_level == 1) {
-                @items = ('Random', 'Alpha-Numeric');
-                $title = 'Generate Playlist';
-            } else {
-                $in_system = 0;
-                $system_level = 0;
-                $level = 0;
-                $selected = 0;
-                next;
-            }
+        if ($in_playlist_menu) {
+            @items = ('Browse Playlist', 'Restart List Jump', 'Random List Jump', 'Generate Random Playlist', 'Generate Alpha-numeric Playlist');
+            $title = 'Playlist';
+        } elsif ($in_system) {
+            @items = ('Generate Logs');
+            $title = 'System';
         } elsif ($level == 0) {
-            @items = ('System', 'Browse Playlist', map { my $p = $_; $p =~ s{^.*/}{}; $p; } @genres);
+            @items = ('System', 'Playlist', map { my $p = $_; $p =~ s{^.*/}{}; $p; } @genres);
             $title = '';
         } elsif ($level == 1) {
             my $artists_for = $genre_artist_lists[$genre_idx];
@@ -408,15 +406,15 @@ sub run_menu {
         if (!$action) {
             last;
         } elsif ($action eq 'back') {
-            if ($in_system) {
-                if ($system_level > 0) {
-                    $system_level--;
-                    $selected = 0;
-                } else {
-                    $in_system = 0;
-                    $level = 0;
-                    $selected = 0;
-                }
+            if ($in_playlist_menu) {
+                $in_playlist_menu = 0;
+                $level = 0;
+                $selected = 1;
+                next;
+            } elsif ($in_system) {
+                $in_system = 0;
+                $level = 0;
+                $selected = 0;
                 next;
             } elsif ($level == 0) {
                 last;
@@ -427,8 +425,9 @@ sub run_menu {
             } elsif ($level == 2) {
                 if ($in_playlist) {
                     $level = 0;
-                    $selected = 1;
                     $in_playlist = 0;
+                    $in_playlist_menu = 1;
+                    $selected = 0;
                 } else {
                     $selected = $album_in_artist_idx;
                     $level = 1;
@@ -449,48 +448,62 @@ sub run_menu {
         } elsif ($action eq 'down') {
             $selected = ($selected < $#items) ? $selected + 1 : 0;
         } elsif ($action eq 'select') {
-            if ($in_system) {
-                if ($system_level == 0) {
-                    if ($selected == 0) {
-                        $system_level = 1;
-                        $selected = 0;
-                    } else {
-                        &display_menu_list('Collecting...', ['Generate Logs'], 0, 13);
-                        my $log_dir = `"$FindBin::Bin/pidap-logs"`;
-                        chomp($log_dir) if defined $log_dir;
-                        $log_dir ||= 'unknown';
-                        &display_menu_list('Done', ["Logs: $log_dir"], 0, 13);
-                        sleep 1;
-                        last;
-                    }
-                } elsif ($system_level == 1) {
-                    if ($selected == 0) {
-                        &display_menu_list('Generating...', ['Random'], 0, 13);
-                        system('perl', "$FindBin::Bin/pidap-playlist", '-r') == 0
-                            or log_warn('pidap-playlist -r failed');
-                        &display_menu_list('Done', ['Random playlist'], 0, 13);
-                    } else {
-                        &display_menu_list('Generating...', ['Alpha-Numeric'], 0, 13);
-                        system('perl', "$FindBin::Bin/pidap-playlist", '-s') == 0
-                            or log_warn('pidap-playlist -s failed');
-                        &display_menu_list('Done', ['Alpha-Numeric playlist'], 0, 13);
-                    }
-                    sleep 1;
-                    &restart_playback();
-                    last;
-                }
-                next;
-            } elsif ($level == 0) {
+            if ($in_playlist_menu) {
                 if ($selected == 0) {
-                    $in_system = 1;
-                    $system_level = 0;
-                    $selected = 0;
-                } elsif ($selected == 1) {
+                    # Browse Playlist: show the album/track list
                     $in_playlist = 1;
                     $level = 2;
                     $playlist_album_idx = $current_album_idx;
                     $album_idx = $playlist_album_idx;
                     $selected = $playlist_album_idx;
+                } elsif ($selected == 1) {
+                    # Restart List: jump to the first album/track
+                    $album_idx = 0;
+                    $selected = 0;
+                    ($track_files, $track_durations, $track_offsets) = &get_album_offsets($albums[$album_idx]);
+                    $track_album_idx = $album_idx;
+                    $did_select = 1;
+                    last;
+                } elsif ($selected == 2) {
+                    # Random List: jump to a random album, track 0
+                    $album_idx = int(rand(scalar(@albums)));
+                    $selected = 0;
+                    ($track_files, $track_durations, $track_offsets) = &get_album_offsets($albums[$album_idx]);
+                    $track_album_idx = $album_idx;
+                    $did_select = 1;
+                    last;
+                } elsif ($selected == 3) {
+                    &display_menu_list('Generating...', ['Generate Random Playlist'], 0, 13);
+                    system('perl', "$FindBin::Bin/pidap-playlist", '-r') == 0
+                        or log_warn('pidap-playlist -r failed');
+                    &display_menu_list('Done', ['Random Playlist Location'], 0, 13);
+                    sleep 1;
+                    &restart_playback();
+                    last;
+                } else {
+                    &display_menu_list('Generating...', ['Generate Alpha-numeric Playlist'], 0, 13);
+                    system('perl', "$FindBin::Bin/pidap-playlist", '-s') == 0
+                        or log_warn('pidap-playlist -s failed');
+                    &display_menu_list('Done', ['Alpha-Numeric Playlist'], 0, 13);
+                    sleep 1;
+                    &restart_playback();
+                    last;
+                }
+            } elsif ($in_system) {
+                &display_menu_list('Collecting...', ['Generate Logs'], 0, 13);
+                my $log_dir = `"$FindBin::Bin/pidap-logs"`;
+                chomp($log_dir) if defined $log_dir;
+                $log_dir ||= 'unknown';
+                &display_menu_list('Done', ["Logs: $log_dir"], 0, 13);
+                sleep 1;
+                last;
+            } elsif ($level == 0) {
+                if ($selected == 0) {
+                    $in_system = 1;
+                    $selected = 0;
+                } elsif ($selected == 1) {
+                    $in_playlist_menu = 1;
+                    $selected = 0;
                 } else {
                     $genre_idx = $selected - 2;
                     $top_selected = $selected;
@@ -601,3 +614,4 @@ while (1) {
 
     run_menu(\@play_albums, $current_album_idx);
 }
+ 

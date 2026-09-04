@@ -6,6 +6,7 @@ use Time::HiRes qw(usleep gettimeofday);
 use IO::Select;
 use IO::Handle;
 use IPC::Open3;
+use Fcntl;
 use FindBin;
 use lib "$FindBin::Bin/lib";
 use PIDAPAlbum qw(read_current_album);
@@ -104,10 +105,10 @@ sub start_gpiomon {
     }
     my @cmd = (
         'gpiomon',
-        '-c', 'gpiochip0',
-        '--format=%o %E',
-        '--bias=pull-up',
-        '--edges=both',
+        '-B', 'pull-up',
+        '-F', '%o %e',
+        '-b',
+        'gpiochip0',
         @BUTTONS,
     );
     log_msg('Starting gpiomon: ' . join(' ', @cmd));
@@ -134,6 +135,10 @@ sub check_gpiomon_events {
             next if $line =~ /^\s*$/;
             my ($pin, $edge) = split(/\s+/, $line, 2);
             next unless defined $pin && defined $edge;
+            # libgpiod 1.x prints %e as 0/1; map to the names the rest of
+            # the code expects.
+            $edge = 'falling' if $edge eq '0';
+            $edge = 'rising'  if $edge eq '1';
             next unless exists $PIN_TO_LABEL{$pin};
             my $now = Time::HiRes::time();
             if ($edge eq 'falling' && $now - ($last_fall{$pin} || 0) < $FALL_DEBOUNCE) {
@@ -742,33 +747,48 @@ sub get_flag_file {
     return $ff;
 }
 
+sub _abandon_menu {
+    my $mf = get_flag_file('pidap.generated.menu_mode');
+    unlink($mf) if -e $mf;
+    $in_menu = 0;
+    $last_menu_action = '';
+}
+
 sub enter_menu {
     log_msg('Entering menu mode');
-    $in_menu = 1;
     $last_menu_action = '';
     my $mf = get_flag_file('pidap.generated.menu_mode');
     if (open(my $fh, '>', $mf)) {
         print $fh "1\n";
         close($fh);
-    }
-    my $fifo = get_flag_file('pidap.generated.menu_in');
-    if (open(my $fh, '>', $fifo)) {
-        print $fh "show\n";
-        close($fh);
     } else {
-        log_msg("Could not write to menu_in FIFO $fifo: $!");
+        log_msg("Could not create $mf: $!");
+    }
+    if (write_menu_action('show')) {
+        $in_menu = 1;
+    } else {
+        log_msg('Menu reader not available, aborting menu mode');
     }
 }
 
 sub write_menu_action {
     my ($action) = @_;
     my $fifo = get_flag_file('pidap.generated.menu_in');
-    if (open(my $fh, '>', $fifo)) {
-        print $fh "$action\n";
-        close($fh);
-    } else {
-        log_msg("Could not write menu action $action to $fifo: $!");
+    my $fh;
+    unless (sysopen($fh, $fifo, O_WRONLY|O_NONBLOCK)) {
+        log_msg("Could not open menu_in FIFO $fifo for $action: $!");
+        _abandon_menu();
+        return 0;
     }
+    my $data = "$action\n";
+    my $n = syswrite($fh, $data);
+    close($fh);
+    if (!defined $n || $n != length($data)) {
+        log_msg("Short write for menu action $action: $!");
+        _abandon_menu();
+        return 0;
+    }
+    return 1;
 }
 
 sub handle_menu_press {
@@ -846,12 +866,45 @@ my $sel = IO::Select->new($gpiomon_fh);
 init_pidap_pid();
 set_backlight(1);
 
+my $MAX_IDLE = $ENV{PIDAP_MAX_IDLE} || 0.05;
+
 while (1) {
+    my $now = Time::HiRes::time();
+    my $next = $now + $MAX_IDLE;
+
+    if ($x_armed && !$x_toggled && $pressed{'X'}) {
+        my $t = $press_time{'X'} + $LOCK_HOLD_SEC;
+        $next = $t if $t < $next;
+    }
+
+    if (!$in_menu && $y_pending && $pressed{'Y'}) {
+        my $t = $press_time{'Y'} + $MENU_HOLD_SEC;
+        $next = $t if $t < $next;
+    }
+
+    if ($in_menu && $last_menu_action =~ /^(up|down)$/) {
+        my $label = ($last_menu_action eq 'up') ? 'A' : 'B';
+        if ($pressed{$label} && $last_menu_repeat) {
+            my $t = $last_menu_repeat;
+            $next = $t if $t < $next;
+        }
+    }
+
+    if ($backlight_timer_armed && $backlight_check_next) {
+        my $t = $backlight_check_next;
+        $next = $t if $t < $next;
+    }
+
+    my $timeout = $next - $now;
+    $timeout = 0 if $timeout < 0;
+
+    # Block on gpiomon until an event or the next scheduled timeout.
+    check_gpiomon_events($sel, $timeout);
+
     check_parent();
     check_lock_timeout();
     check_menu_state();
     check_menu_repeat();
-    check_gpiomon_events($sel, $BUTTON_POLL);
     check_play_pid();
     check_backlight_timeout();
 }

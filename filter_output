@@ -1,6 +1,9 @@
 #!/usr/bin/perl
 
+use FindBin;
+
 my ($last_artist, $last_album, $last_track);
+print "\e[2J\e[H";
 
 while(<>) {
     #
@@ -19,28 +22,31 @@ while(<>) {
                   && $album  eq ($last_album  // '')
                   && $track  eq ($last_track  // ''));
 
-	    $cue = `grep '\/${album}' pidap.generated.playlist`;
+	    my $DATA_DIR = $ENV{PIDAP_DATA_DIR} || $ENV{PIDAP_RUN_DIR} || $FindBin::Bin;
+	    my $playlist = "$DATA_DIR/pidap.generated.playlist";
+	    $cue = `grep -s '\/${album}' "$playlist" 2>/dev/null`;
 	    if($cue =~ m/\s+(\d+)/) {
 		$cue_num = $1;
 	    }
 
-            $last = `tail -1 pidap.generated.playlist`;
+            $last = `tail -1 "$playlist" 2>/dev/null`;
 	    if($last =~ m/\s+(\d+)/) {
 		$last_num = $1;
 	    }
 
             ($last_artist, $last_album, $last_track) = ($artist, $album, $track);
 
-	    print "\n";
+	    # Print 3-line track block without a leading blank so the track name
+	    # stays on the last visible line and old blocks scroll down cleanly.
 	    print "$artist\n";
 	    print "${cue_num}\/${last_num}: ${album}\n";
 	    print "$track\n";
 
-	    my $RUN_DIR = $ENV{PIDAP_RUN_DIR} || '.';
 	    if (open(my $df, '>', "$RUN_DIR/pidap.generated.display")) {
 	        print $df "\n$artist\n";
 	        print $df "${cue_num}\/${last_num}: ${album}\n";
 	        print $df "$track\n";
+                print $df "\n";
 	        close($df);
 	    }
 	}

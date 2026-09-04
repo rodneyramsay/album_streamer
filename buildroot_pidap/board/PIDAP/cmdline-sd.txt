@@ -1,1 +1,1 @@
-root=/dev/mmcblk0p2 rw rootfstype=ext4 rootwait console=ttyAMA0,115200 console=tty1 smsc95xx.turbo_mode=0 coherent_pool=2M fbcon=rotate:3 fbcon=map:1 fbcon=font:VGA8x8 vt.global_cursor_default=0
+root=/dev/mmcblk0p2 rw rootfstype=ext4 rootwait console=ttyAMA0,115200 smsc95xx.turbo_mode=0 coherent_pool=2M fbcon=rotate:3 fbcon=map:1 fbcon=font:VGA8x8 vt.global_cursor_default=0

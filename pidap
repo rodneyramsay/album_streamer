@@ -9,6 +9,7 @@ use Time::HiRes;
 use IO::Select;
 use Fcntl qw(O_RDWR O_NONBLOCK);
 use PIDAPAlbum qw(get_album_offsets write_current_album read_current_album build_resume_cmd);
+use PIDAPRand;
 
 $SIG{CHLD} = 'IGNORE';
 unless (-t STDOUT || $ENV{PIDAP_DEBUG}) {
@@ -63,16 +64,23 @@ my $RUN_DIR = $ENV{PIDAP_RUN_DIR} || $FindBin::Bin;
 if ($ENV{PIDAP_RUN_DIR} && !-d $RUN_DIR) {
    system('mkdir', '-p', $RUN_DIR) == 0 or die "cannot create $RUN_DIR: $!";
 }
+$ENV{PIDAP_RUN_DIR} = $RUN_DIR;
 
-$playlist_file = "$FindBin::Bin/pidap.generated.playlist";
-$place_file = "$FindBin::Bin/pidap.generated.place";
-$resume_file = "$FindBin::Bin/pidap.generated.resume";
+my $DATA_DIR = $ENV{PIDAP_DATA_DIR} || $RUN_DIR;
+if ($ENV{PIDAP_DATA_DIR} && !-d $DATA_DIR) {
+   system('mkdir', '-p', $DATA_DIR) == 0 or die "cannot create $DATA_DIR: $!";
+}
+$ENV{PIDAP_DATA_DIR} = $DATA_DIR;
+
+$playlist_file = "$DATA_DIR/pidap.generated.playlist";
+$place_file = "$DATA_DIR/pidap.generated.place";
+$resume_file = "$DATA_DIR/pidap.generated.resume";
 
 #
 # Pirate Audio button / volume handler settings
 #
 $play_pid_file = "$RUN_DIR/pidap.generated.play_pid";
-$current_album_file = "$RUN_DIR/pidap.generated.current_album";
+$current_album_file = "$DATA_DIR/pidap.generated.current_album";
 $ENV{PIDAP_PID_FILE} = $play_pid_file;
 $ENV{PIDAP_BUTTON_MAP} = $ENV{PIDAP_BUTTON_MAP} || "A:vol_up,B:vol_down,X:lock,Y:next_track";
 $ENV{PIDAP_VOLUME_CONTROL} = $ENV{PIDAP_VOLUME_CONTROL} || "Amp";
@@ -98,10 +106,9 @@ if($led_brightness && !$led_trigger) {
 
 unlink($play_pid_file) if(-e $play_pid_file);
 
-my $boot_mode = $build_only ? &read_boot_gpio() : '';
+my $boot_mode = '';
 
 if ($ENV{PIDAP_NO_SYSTEMD} && !$build_only) {
-    &build_playlist();
     &start_menu();
 }
 
@@ -138,6 +145,7 @@ my $resume_offset = 0;
 #
 my $boot_applied = 0;
 my $sorted_playlist = 0;
+my $no_playlist_warned = 0;
 
 
 while($run) {
@@ -146,8 +154,10 @@ while($run) {
 
    @play_albums = &read_playlist_file($playlist_file);
    unless (@play_albums) {
-      print "No playlist file ($playlist_file) available, cannot play\n";
-      exit(1);
+      print "No playlist file ($playlist_file) available, cannot play\n" unless $no_playlist_warned;
+      $no_playlist_warned = 1;
+      sleep 0.2;
+      next;
    }
 
    ($resume_album, $resume_offset) = &read_resume;
@@ -513,8 +523,8 @@ sub set_initial_volume {
       $attempt++;
    }
 
-   print("Warning: could not set initial volume to ${initial}%\n");
-   return 0;
+   print("Warning: could not set initial volume to ${initial}%, continuing anyway\n");
+   return 1;
 }
 
 
@@ -741,13 +751,9 @@ sub monitor_playback {
                if (defined $line) {
                   $consumed = 1;
                   chomp $line;
-                  my $next_line = <$menu_out_fh>;
-                  if ($line =~ /^album=(.+)/) {
+                  if ($line =~ /^album=(.+?)\toffset=([0-9.]+)/) {
                      $resume_album = $1;
-                     $resume_offset = 0;
-                     if (defined $next_line && $next_line =~ /^offset=([0-9.]+)/) {
-                        $resume_offset = $1;
-                     }
+                     $resume_offset = $2;
                      $do_menu_select = 1;
                      print("DEBUG: menu result album=$resume_album offset=$resume_offset\n") if $ENV{PIDAP_DEBUG};
                      kill(9, -$play_id) if $play_id > 0;
@@ -943,7 +949,8 @@ sub print_run() {
       #
       # Send sox play output to the TFT console.
       #
-      open(STDOUT, '>', '/dev/tty1') or die "Can't open /dev/tty1: $!\n";
+      open(STDOUT, '>', '/dev/tty1') or open(STDOUT, '>', '/dev/null')
+          or die "Can't open stdout: $!\n";
       open(STDERR, '>&STDOUT') or die "Can't dup STDOUT to STDERR: $!\n";
 
       #

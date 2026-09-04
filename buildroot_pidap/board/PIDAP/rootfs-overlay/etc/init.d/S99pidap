@@ -1,15 +1,22 @@
 #!/bin/sh
 
 DAEMON=/usr/lib/pidap/pidap
+PIDFILE=/run/pidap/pidap.pid
 
 case "$1" in
     start)
         export PIDAP_NO_SYSTEMD=1
         export PIDAP_INITIAL_VOLUME=40
-        /sbin/start-stop-daemon -S -b -x "$DAEMON"
+        export PIDAP_RUN_DIR=/run/pidap
+        export PIDAP_DATA_DIR=/usr/local/Music
+        mkdir -p "$PIDAP_RUN_DIR"
+        /sbin/start-stop-daemon -S -b -m -p "$PIDFILE" -x "$DAEMON"
         ;;
     stop)
-        /sbin/start-stop-daemon -K -x "$DAEMON"
+        /sbin/start-stop-daemon -K -p "$PIDFILE" 2>/dev/null || true
+        # Clean up any child processes that may still be running.
+        killall -q pidap-menu pidap-buttons filter_output 2>/dev/null || true
+        rm -f "$PIDFILE"
         ;;
     restart)
         $0 stop

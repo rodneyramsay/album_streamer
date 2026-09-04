@@ -11,11 +11,24 @@ case "$1" in
         for i in $(seq 1 30); do
             if [ -b /dev/mmcblk0p3 ]; then
                 if mountpoint -q /usr/local/Music; then
-                    echo "/usr/local/Music already mounted" >/dev/null
-                else
-                    mount /dev/mmcblk0p3 /usr/local/Music
+                    umount /usr/local/Music 2>/dev/null || true
                 fi
-                exit 0
+
+                mount -o rw /dev/mmcblk0p3 /usr/local/Music
+
+                # Some filesystems (especially a dirty vfat) may still come up
+                # read-only despite the rw option. Try to remount rw if so.
+                if ! touch /usr/local/Music/.rwtest 2>/dev/null; then
+                    echo "S40mount-usrlocal: /usr/local/Music is read-only, forcing remount" >&2
+                    mount -o remount,rw /dev/mmcblk0p3 /usr/local/Music || true
+                fi
+
+                if touch /usr/local/Music/.rwtest 2>/dev/null; then
+                    rm -f /usr/local/Music/.rwtest
+                    exit 0
+                else
+                    echo "S40mount-usrlocal: /usr/local/Music is still read-only" >&2
+                fi
             fi
             sleep 0.5
         done

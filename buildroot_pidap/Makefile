@@ -69,7 +69,21 @@ check-data:
 	'
 
 
-sdcard: defconfig check
+check-card:
+	@for p in 1 2 3; do \
+		dev="$(CARD)$$p"; \
+		if [ ! -b "$$dev" ]; then \
+			echo "Error: $$dev is not a block device (card missing or stale file)"; \
+			exit 1; \
+		fi; \
+		size=$$(sudo blockdev --getsize64 "$$dev" 2>/dev/null) || true; \
+		if [ -z "$$size" ] || [ "$$size" -eq 0 ] 2>/dev/null; then \
+			echo "Error: $$dev has no size (card not inserted or wrong partition)"; \
+			exit 1; \
+		fi; \
+	done
+
+sdcard: defconfig check check-card
 	-for p in 1 2 3; do sudo umount $(CARD)$$p 2>/dev/null || true; done
 	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)" BR2_EXTERNAL=$(BR2_EXTERNAL)
 	sudo CARD=$(CARD) MAX_USERDATA_G=$(MAX_USERDATA_G) ./flash-sdcard.sh all
@@ -78,7 +92,7 @@ sdcard: defconfig check
 		ssh-keygen -f /home/rodney/.ssh/known_hosts -R 192.168.0.31 2>/dev/null || true; \
 	fi
 
-sdcard-boot: defconfig check
+sdcard-boot: defconfig check check-card
 	-for p in 1 2 3; do sudo umount $(CARD)$$p 2>/dev/null || true; done
 	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)" BR2_EXTERNAL=$(BR2_EXTERNAL)
 	sudo dd if=$(BUILDROOT_DIR)/output/images/boot.vfat of=$(CARD)1 bs=4M status=progress conv=fsync
@@ -87,18 +101,22 @@ sdcard-boot: defconfig check
 		ssh-keygen -f /home/rodney/.ssh/known_hosts -R 192.168.0.31 2>/dev/null || true; \
 	fi
 
-sdcard-system: defconfig check
+sdcard-system: defconfig check check-card
 	-for p in 1 2 3; do sudo umount $(CARD)$$p 2>/dev/null || true; done
 	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)" BR2_EXTERNAL=$(BR2_EXTERNAL)
+	# Clean the existing user-data partition if it is dirty; we don't fsck on the Pi.
+	-sudo fsck.vfat -a $(CARD)3 2>/dev/null || sudo fsck.fat -a $(CARD)3 2>/dev/null || true
 	cp $(BUILDROOT_DIR)/output/images/boot.vfat $(BUILDROOT_DIR)/output/images/boot-sd.vfat
 	MTOOLS_SKIP_CHECK=1 mcopy -o -i $(BUILDROOT_DIR)/output/images/boot-sd.vfat $(BR2_EXTERNAL)/board/PIDAP/cmdline-sd.txt ::cmdline.txt
 	sudo dd if=$(BUILDROOT_DIR)/output/images/boot-sd.vfat of=$(CARD)1 bs=4M status=progress conv=fsync
 	rm -f $(BUILDROOT_DIR)/output/images/boot-sd.vfat
 	sudo dd if=$(BUILDROOT_DIR)/output/images/rootfs.ext2 of=$(CARD)2 bs=4M status=progress conv=fsync
 
-sdcard-data: defconfig check-data
+sdcard-data: defconfig check-data check-card
 	-for p in 1 2 3; do sudo umount $(CARD)$$p 2>/dev/null || true; done
 	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)" BR2_EXTERNAL=$(BR2_EXTERNAL)
+	# Clean the user-data partition before writing data.
+	-sudo fsck.vfat -a $(CARD)3 2>/dev/null || sudo fsck.fat -a $(CARD)3 2>/dev/null || true
 	sudo CARD=$(CARD) ./flash-sdcard.sh data
 
 # Prepare a card with a sensibly small user-data partition.  If

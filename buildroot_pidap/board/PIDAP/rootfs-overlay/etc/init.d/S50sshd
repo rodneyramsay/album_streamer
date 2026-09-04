@@ -1,0 +1,19 @@
+#!/bin/sh
+#
+# Start the OpenSSH server.
+#
+
+case "$1" in
+    start)
+        # Generate host keys if they don't exist yet.
+        if [ ! -f /etc/ssh/ssh_host_rsa_key ]; then
+            /usr/bin/ssh-keygen -A
+        fi
+        /usr/sbin/sshd
+        ;;
+    stop)
+        killall sshd 2>/dev/null || true
+        ;;
+    *)
+        ;;
+esac

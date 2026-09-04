@@ -7,6 +7,7 @@ use FindBin;
 use lib "$FindBin::Bin/lib";
 use Time::HiRes;
 use PIDAPAlbum qw(get_album_offsets write_current_album read_current_album build_resume_cmd);
+use PIDAPRand;
 
 $SIG{CHLD} = 'IGNORE';
 unless (-t STDOUT || $ENV{PIDAP_DEBUG}) {
@@ -62,15 +63,21 @@ if ($ENV{PIDAP_RUN_DIR} && !-d $RUN_DIR) {
    system('mkdir', '-p', $RUN_DIR) == 0 or die "cannot create $RUN_DIR: $!";
 }
 
-$playlist_file = "$FindBin::Bin/pidap.generated.playlist";
-$place_file = "$FindBin::Bin/pidap.generated.place";
-$resume_file = "$FindBin::Bin/pidap.generated.resume";
+my $DATA_DIR = $ENV{PIDAP_DATA_DIR} || $RUN_DIR;
+if ($ENV{PIDAP_DATA_DIR} && !-d $DATA_DIR) {
+   system('mkdir', '-p', $DATA_DIR) == 0 or die "cannot create $DATA_DIR: $!";
+}
+$ENV{PIDAP_DATA_DIR} = $DATA_DIR;
+
+$playlist_file = "$DATA_DIR/pidap.generated.playlist";
+$place_file = "$DATA_DIR/pidap.generated.place";
+$resume_file = "$DATA_DIR/pidap.generated.resume";
 
 #
 # Pirate Audio button / volume handler settings
 #
 $play_pid_file = "$RUN_DIR/pidap.generated.play_pid";
-$current_album_file = "$RUN_DIR/pidap.generated.current_album";
+$current_album_file = "$DATA_DIR/pidap.generated.current_album";
 $ENV{PIDAP_PID_FILE} = $play_pid_file;
 $ENV{PIDAP_BUTTON_MAP} = $ENV{PIDAP_BUTTON_MAP} || "A:vol_up,B:vol_down,X:lock,Y:next_track";
 $ENV{PIDAP_VOLUME_CONTROL} = $ENV{PIDAP_VOLUME_CONTROL} || "Amp";
