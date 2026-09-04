@@ -17,10 +17,12 @@ my $VOLUME_CONTROL = $ENV{PIDAP_VOLUME_CONTROL} || 'Amp';
 my $VOLUME_STEP = $ENV{PIDAP_VOLUME_STEP} || 2;
 my $LOCK_HOLD_SEC = $ENV{PIDAP_LOCK_HOLD_SEC} || 2.2;
 my $MENU_HOLD_SEC = $ENV{PIDAP_MENU_HOLD_SEC} || 1.5;
-my $FALL_DEBOUNCE = $ENV{PIDAP_FALL_DEBOUNCE} || 0.15;
-my $RISE_DEBOUNCE = $ENV{PIDAP_RISE_DEBOUNCE} || 0.10;
-my $MIN_PRESS_SEC = $ENV{PIDAP_MIN_PRESS_SEC} || 0.05;
+my $FALL_DEBOUNCE = $ENV{PIDAP_FALL_DEBOUNCE} || 0.25;
+my $RISE_DEBOUNCE = $ENV{PIDAP_RISE_DEBOUNCE} || 0.15;
+my $MIN_PRESS_SEC = $ENV{PIDAP_MIN_PRESS_SEC} || 0.08;
 my $BUTTON_POLL = $ENV{PIDAP_BUTTON_POLL} || 0.25;
+my $MIN_MENU_ACTION_GAP = $ENV{PIDAP_MIN_MENU_ACTION_GAP} || 0.30;
+my $MIN_VOLUME_GAP = $ENV{PIDAP_MIN_VOLUME_GAP} || 0.25;
 my $GPIO_CHIP = $ENV{PIDAP_GPIO_CHIP} || '';
 
 my @BUTTONS = (5, 6, 16, 24);
@@ -49,8 +51,10 @@ my $y_pending = 0;
 my $in_menu = 0;
 my $last_menu_action = '';
 my $last_menu_repeat = 0;
+my %last_menu_action_time = ();
 my $MENU_REPEAT_INITIAL = $ENV{PIDAP_MENU_REPEAT_INITIAL} || 0.6;
 my $MENU_REPEAT_INTERVAL = $ENV{PIDAP_MENU_REPEAT_INTERVAL} || 0.35;
+my %last_volume_time = ();
 my $pidap_pid = 0;
 my $last_play_pid = 0;
 my $album_start = 0;
@@ -683,9 +687,21 @@ sub handle_release {
     }
 
     if ($func eq 'vol_up') {
-        run_amixer('up');
+        my $now = Time::HiRes::time();
+        if ($now - ($last_volume_time{up} || 0) >= $MIN_VOLUME_GAP) {
+            $last_volume_time{up} = $now;
+            run_amixer('up');
+        } else {
+            log_msg("Volume up ignored (debounce)");
+        }
     } elsif ($func eq 'vol_down') {
-        run_amixer('down');
+        my $now = Time::HiRes::time();
+        if ($now - ($last_volume_time{down} || 0) >= $MIN_VOLUME_GAP) {
+            $last_volume_time{down} = $now;
+            run_amixer('down');
+        } else {
+            log_msg("Volume down ignored (debounce)");
+        }
     }
 }
 
@@ -796,10 +812,16 @@ sub handle_menu_press {
     my %action = (A => 'up', B => 'down', X => 'select', Y => 'back');
     my $act = $action{$label};
     return unless $act;
+    my $now = Time::HiRes::time();
+    if ($now - ($last_menu_action_time{$act} || 0) < $MIN_MENU_ACTION_GAP) {
+        log_msg("Menu: $label -> $act ignored (debounce)");
+        return;
+    }
+    $last_menu_action_time{$act} = $now;
     log_msg("Menu: $label -> $act");
     write_menu_action($act);
     $last_menu_action = $act;
-    $last_menu_repeat = Time::HiRes::time() + $MENU_REPEAT_INITIAL;
+    $last_menu_repeat = $now + $MENU_REPEAT_INITIAL;
     $menu_pressed{$label} = 1;
 }
 

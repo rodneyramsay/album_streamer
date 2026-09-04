@@ -5,3 +5,5 @@ Vinyl/Dire_Straits/Dire_Straits
 Vinyl/Dire_Straits/Love_Over_Gold
 Vinyl/Dire_Straits/Making_Movies
 Jam/Grateful_Dead_02/840722
+Rock/Who/Tommy
+Rock/Who/Quadrophenia

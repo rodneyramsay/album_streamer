@@ -343,7 +343,9 @@ sub run_menu {
                 ($track_files, $track_durations, $track_offsets) = &get_album_offsets($album);
                 $track_album_idx = $album_idx;
             }
-            unless ($track_files && @$track_files) {
+            my $track_count = (defined $track_files && @$track_files) ? scalar(@$track_files) : 0;
+            log_warn("track list for album_idx=$album_idx ($albums[$album_idx]) tracks=$track_count selected=$selected");
+            unless ($track_count) {
                 $level = 2;
                 $selected = $album_in_artist_idx;
                 next;
@@ -456,6 +458,7 @@ sub run_menu {
             if ($in_playlist_menu) {
                 if ($selected == 0) {
                     # Browse Playlist: show the album/track list
+                    log_warn("Browse Playlist selected, entering playlist album list");
                     $in_playlist = 1;
                     $level = 2;
                     $playlist_album_idx = $current_album_idx;
