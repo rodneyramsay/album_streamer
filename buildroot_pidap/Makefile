@@ -78,18 +78,26 @@ check-data:
 
 
 check-card:
-	@for p in 1 2 3 4; do \
-		dev="$(CARD)$$p"; \
+	@sh -c ' \
+		set -e; \
+		dev="$(CARD)"; \
 		if [ ! -b "$$dev" ]; then \
-			echo "Error: $$dev is not a block device (card missing or stale file)"; \
+			echo "Error: $$dev is not a block device (card missing or wrong device)"; \
 			exit 1; \
 		fi; \
 		size=$$(sudo blockdev --getsize64 "$$dev" 2>/dev/null) || true; \
 		if [ -z "$$size" ] || [ "$$size" -eq 0 ] 2>/dev/null; then \
-			echo "Error: $$dev has no size (card not inserted or wrong partition)"; \
+			echo "Error: $$dev has no size (card not inserted)"; \
 			exit 1; \
 		fi; \
-	done
+		echo "$$dev is present -- continue with care"; \
+		for p in 1 2 3 4; do \
+			part="$${dev}$$p"; \
+			if [ ! -b "$$part" ]; then \
+				echo "Warning: $$part does not exist yet (will be created by flash)" >&2; \
+			fi; \
+		done; \
+	'
 
 sdcard: defconfig check check-card
 	-for p in 1 2 3 4; do sudo umount $(CARD)$$p 2>/dev/null || true; done
@@ -100,7 +108,7 @@ sdcard: defconfig check check-card
 		ssh-keygen -f /home/rodney/.ssh/known_hosts -R 192.168.0.31 2>/dev/null || true; \
 	fi
 
-sdcard-boot: defconfig check check-card
+sdcard-boot: defconfig check check-data check-card
 	-for p in 1 2 3 4; do sudo umount $(CARD)$$p 2>/dev/null || true; done
 	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)" BR2_EXTERNAL=$(BR2_EXTERNAL)
 	sudo dd if=$(BUILDROOT_DIR)/output/images/boot.vfat of=$(CARD)1 bs=4M status=progress conv=fsync
@@ -109,7 +117,7 @@ sdcard-boot: defconfig check check-card
 		ssh-keygen -f /home/rodney/.ssh/known_hosts -R 192.168.0.31 2>/dev/null || true; \
 	fi
 
-sdcard-system: defconfig check check-card
+sdcard-system: defconfig check check-data check-card
 	-for p in 1 2 3 4; do sudo umount $(CARD)$$p 2>/dev/null || true; done
 	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)" BR2_EXTERNAL=$(BR2_EXTERNAL)
 	# Clean the existing user-data partition if it is dirty; we don't fsck on the Pi.
