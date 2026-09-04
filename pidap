@@ -951,6 +951,19 @@ sub play_albums() {
   print("Album Name($ii): $albums[$ii]\n");
   &write_place_file($place_file, $ii);
   my $action = &play_one_album($albums[$ii], $ii, \@albums, \$volume_initialized, \%album_offsets_cache, $sel, $menu_out_fh, $pause_fh);
+  # If play_one_album set a resume target (menu selection, prev/restart,
+  # skip track), jump there now.  This must happen before the action-based
+  # increment so menu selects on the last album do not fall off the end
+  # of the playlist.
+  if ($resume_album) {
+   for my $i (0 .. $#albums) {
+    if ($albums[$i] eq $resume_album) {
+     $ii = $i;
+     last;
+    }
+   }
+   next;
+  }
   if ($action eq q#prev#) {
    if ($ii > 0) { $ii--; } else { $ii = $#albums; }
   } elsif ($action eq q#restart#) {
