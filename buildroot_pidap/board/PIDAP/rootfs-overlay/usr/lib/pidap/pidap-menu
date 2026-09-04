@@ -14,7 +14,11 @@ my $MENU_ITEM_MAX  = $MENU_COLUMNS - 1;
 my $HSCROLL_INTERVAL = 0.35;
 my $NAV_COOLDOWN = $ENV{PIDAP_MENU_NAV_COOLDOWN} || 0.15;
 
-my $RUN_DIR = $ENV{PIDAP_RUN_DIR} || $FindBin::Bin;
+my $RUN_DIR = $ENV{PIDAP_RUN_DIR};
+if (!$RUN_DIR && $ENV{PIDAP_PID_FILE}) {
+    ($RUN_DIR = $ENV{PIDAP_PID_FILE}) =~ s{[^/]+$}{};
+}
+$RUN_DIR ||= $FindBin::Bin;
 my $last_nav_time = 0;
 if ($ENV{PIDAP_RUN_DIR} && !-d $RUN_DIR) {
     system('mkdir', '-p', $RUN_DIR) == 0 or die "cannot create $RUN_DIR: $!\n";
@@ -31,6 +35,7 @@ my $display_buffer_file = "$RUN_DIR/pidap.generated.display";
 my $menu_mode_file      = "$RUN_DIR/pidap.generated.menu_mode";
 my $menu_in_fifo        = "$RUN_DIR/pidap.generated.menu_in";
 my $menu_out_fifo       = "$RUN_DIR/pidap.generated.menu_out";
+my $menu_result_file    = "$RUN_DIR/pidap.generated.menu_result";
 my $play_pid_file       = "$RUN_DIR/pidap.generated.play_pid";
 
 sub log_warn {
@@ -566,23 +571,27 @@ sub run_menu {
     unlink($menu_mode_file) if -e $menu_mode_file;
 
     # Write the result back to the caller before returning.
-    # Open non-blocking so a missing reader cannot hang the menu process.
+    # We write both a tmpfs result file and the legacy FIFO; pidap checks
+    # the file so a missing FIFO reader cannot lose the selection.
+    my $result = $did_select ? "album=$result_album\toffset=$result_offset" : "cancel=1";
+    log_warn("writing result: $result");
+    if (open(my $rf, '>', $menu_result_file)) {
+        print $rf "$result\n";
+        close($rf);
+    } else {
+        log_warn("cannot write $menu_result_file: $!");
+    }
     if (sysopen(my $out, $menu_out_fifo, O_WRONLY|O_NONBLOCK)) {
-        if ($did_select) {
-            log_warn("writing result: album=$result_album offset=$result_offset");
-            syswrite($out, "album=$result_album\toffset=$result_offset\n");
-        } else {
-            log_warn("writing result: cancel");
-            syswrite($out, "cancel=1\n");
-        }
+        syswrite($out, "$result\n");
         close($out);
     } else {
         log_warn("cannot write $menu_out_fifo: $!");
     }
 }
 
-# Clean up a stale menu_mode file from a previous/crashed run.
+# Clean up stale runtime files from a previous/crashed run.
 unlink($menu_mode_file) if -e $menu_mode_file;
+unlink($menu_result_file) if -e $menu_result_file;
 
 # Open the command FIFO and wait for 'show' requests.
 open(MENU_IN, '+<', $menu_in_fifo) or die "cannot open $menu_in_fifo: $!\n";
