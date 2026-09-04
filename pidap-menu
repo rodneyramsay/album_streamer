@@ -35,7 +35,6 @@ my $display_buffer_file = "$RUN_DIR/pidap.generated.display";
 my $menu_mode_file      = "$RUN_DIR/pidap.generated.menu_mode";
 my $menu_in_fifo        = "$RUN_DIR/pidap.generated.menu_in";
 my $menu_out_fifo       = "$RUN_DIR/pidap.generated.menu_out";
-my $menu_result_file    = "$RUN_DIR/pidap.generated.menu_result";
 my $play_pid_file       = "$RUN_DIR/pidap.generated.play_pid";
 
 sub log_warn {
@@ -570,17 +569,9 @@ sub run_menu {
     # menu mode even if the result pipe is slow.
     unlink($menu_mode_file) if -e $menu_mode_file;
 
-    # Write the result back to the caller before returning.
-    # We write both a tmpfs result file and the legacy FIFO; pidap checks
-    # the file so a missing FIFO reader cannot lose the selection.
+    # Write the result back to the caller through the FIFO.
     my $result = $did_select ? "album=$result_album\toffset=$result_offset" : "cancel=1";
     log_warn("writing result: $result");
-    if (open(my $rf, '>', $menu_result_file)) {
-        print $rf "$result\n";
-        close($rf);
-    } else {
-        log_warn("cannot write $menu_result_file: $!");
-    }
     if (sysopen(my $out, $menu_out_fifo, O_WRONLY|O_NONBLOCK)) {
         syswrite($out, "$result\n");
         close($out);
@@ -589,9 +580,8 @@ sub run_menu {
     }
 }
 
-# Clean up stale runtime files from a previous/crashed run.
+# Clean up a stale menu_mode file from a previous/crashed run.
 unlink($menu_mode_file) if -e $menu_mode_file;
-unlink($menu_result_file) if -e $menu_result_file;
 
 # Open the command FIFO and wait for 'show' requests.
 open(MENU_IN, '+<', $menu_in_fifo) or die "cannot open $menu_in_fifo: $!\n";

@@ -7,25 +7,32 @@ use FindBin;
 use lib "$FindBin::Bin/lib";
 use Time::HiRes;
 use IO::Select;
-use Fcntl qw(O_RDWR O_NONBLOCK);
+use Errno qw(EINTR);
+use Fcntl qw(F_GETFL F_SETFL O_RDWR O_NONBLOCK);
 use PIDAPAlbum qw(get_album_offsets write_current_album read_current_album build_resume_cmd);
 use PIDAPRand;
 
-$SIG{CHLD} = 'IGNORE';
 unless (-t STDOUT || $ENV{PIDAP_DEBUG}) {
    open(STDOUT, '>', '/dev/null') or die "cannot redirect STDOUT: $!";
    open(STDERR, '>&STDOUT') or die "cannot redirect STDERR: $!";
 }
 
 #
-# Button handler asks pidap to skip to the next track via SIGUSR1,
-# or asks for previous/restart via SIGUSR2 (B+Y).
+# Event notification pipe.  SIGCHLD, SIGUSR1 and SIGUSR2 write a byte to the
+# write end; monitor_playback waits on the read end instead of polling.
 #
+pipe(my $SIG_R, my $SIG_W) or die "pipe: $!";
+my $sig_flags = fcntl($SIG_W, F_GETFL, 0) or die "fcntl F_GETFL: $!";
+fcntl($SIG_W, F_SETFL, $sig_flags | O_NONBLOCK) or die "fcntl F_SETFL: $!";
+select((select($SIG_W), $| = 1)[0]);
+
+our $g_play_pid = 0;
 our $g_skip_track = 0;
 our $g_prev_or_restart = 0;
 our $g_prev_or_restart_time = 0;
-$SIG{USR1} = sub { $g_skip_track = 1; };
-$SIG{USR2} = sub { $g_prev_or_restart = 1; $g_prev_or_restart_time = Time::HiRes::time(); };
+$SIG{CHLD} = sub { syswrite($SIG_W, 'C', 1); };
+$SIG{USR1} = sub { $g_skip_track = 1; syswrite($SIG_W, '1', 1); };
+$SIG{USR2} = sub { $g_prev_or_restart = 1; $g_prev_or_restart_time = Time::HiRes::time(); syswrite($SIG_W, '2', 1); };
 
 
 $usage =
@@ -655,12 +662,11 @@ sub resolve_previous_track {
 }
 
 sub monitor_playback {
-   my ($play_id, $play_start_offset, $play_album, $offsets, $current_ii, $albums_ref, $album_offsets_cache_ref, $sel, $menu_out_fh, $pause_fh, $menu_result_file) = @_;
+   my ($play_id, $play_start_offset, $play_album, $offsets, $current_ii, $albums_ref, $album_offsets_cache_ref, $sel, $menu_out_fh, $pause_fh) = @_;
    my @albums = @$albums_ref;
    my $start_time = Time::HiRes::time();
    my $track_blink_until = 0;
    my $next_offset_idx = 0;
-   my $POLL = $ENV{PIDAP_MONITOR_POLL} || 0.5;
    for my $i (0 .. $#$offsets) {
       last if $offsets->[$i] > $play_start_offset + 0.05;
       $next_offset_idx = $i + 1;
@@ -680,126 +686,125 @@ sub monitor_playback {
    my $do_previous = 0;
    my $do_restart = 0;
    my $do_menu_select = 0;
-   while ($play_id > 0) {
-      my $res = waitpid($play_id, WNOHANG);
-      if ($res == 0) {
-         if ($g_skip_track) {
-            $g_skip_track = 0;
-            if ($next_offset_idx <= $#$offsets) {
-               $resume_album = $play_album;
-               $resume_offset = $offsets->[$next_offset_idx];
-            } else {
-               my $next_ii = ($current_ii + 1) % @albums;
-               $resume_album = $albums[$next_ii];
-               $resume_offset = 0;
-            }
-            $do_restart = 1;
-            &led_track_blink();
-            $track_blink_until = Time::HiRes::time() + 0.15;
-            kill(9, -$play_id) if $play_id > 0;
-         } elsif ($g_prev_or_restart) {
-            $g_prev_or_restart = 0;
-            my $now = $g_prev_or_restart_time;
-            my $effective_pause = $total_pause_time + ($paused ? ($now - $pause_start) : 0);
-            my $album_time = $play_start_offset + ($now - $start_time - $effective_pause);
-            my $track_idx = 0;
-            for my $i (0 .. $#$offsets) {
-               last if $offsets->[$i] > $album_time;
-               $track_idx = $i;
-            }
-            my $track_start = $offsets->[$track_idx];
-            my $track_time = $album_time - $track_start;
-            if ($track_idx == 0 && $track_time <= 5) {
-               $do_previous = 1;
-            } else {
-               $do_restart = 1;
-               $resume_album = $play_album;
-               $resume_offset = 0;
-            }
-            print("DEBUG: B+Y track_idx=$track_idx track_time=$track_time do_previous=$do_previous do_restart=$do_restart\n") if $ENV{PIDAP_DEBUG};
-            kill(9, -$play_id) if $play_id > 0;
-         } elsif (-e qq#${RUN_DIR}/pidap.generated.previous_track#) {
-            my $now = Time::HiRes::time();
-            my $effective_pause = $total_pause_time + ($paused ? ($now - $pause_start) : 0);
-            my $album_time = $play_start_offset + ($now - $start_time - $effective_pause);
-            my $track_idx = 0;
-            for my $i (0 .. $#$offsets) {
-               last if $offsets->[$i] > $album_time;
-               $track_idx = $i;
-            }
-            my $track_start = $offsets->[$track_idx];
-            my $track_time = $album_time - $track_start;
-            $do_restart = &resolve_previous_track($play_album, $play_start_offset, $album_time, $offsets, $current_ii, $albums_ref, $album_offsets_cache_ref);
-            print("DEBUG: previous_track track_idx=$track_idx track_time=$track_time resume_offset=$resume_offset resume_album=$resume_album\n") if $ENV{PIDAP_DEBUG};
-            kill(9, -$play_id);
-         } elsif (-e qq#${RUN_DIR}/pidap.generated.previous# || -e qq#${RUN_DIR}/pidap.generated.restart#) {
-            kill(9, -$play_id);
-         }
+
+   # If the play process is already gone, there is nothing to monitor.
+   my $res = waitpid($play_id, WNOHANG);
+   return ($do_previous, $do_restart, $do_menu_select) if $res > 0 || $res == -1;
+
+   while (1) {
+      # Reap any children that have exited; if our play process exited we
+      # are done.  This also reaps pidap-menu/pidap-buttons if they die.
+      my $play_done = 0;
+      while ((my $pid = waitpid(-1, WNOHANG)) > 0) {
+         $play_done = 1 if $pid == $play_id;
       }
-      last if $res > 0 || $res == -1;
+      last if $play_done;
+
+      # Process the next pending action.  Signals set globals and write to
+      # SIG_R, which wakes the can_read below.  Buttons that write flag files
+      # also kill the play process, so the SIGCHLD will wake us.
+      if ($g_skip_track) {
+         $g_skip_track = 0;
+         if ($next_offset_idx <= $#$offsets) {
+            $resume_album = $play_album;
+            $resume_offset = $offsets->[$next_offset_idx];
+         } else {
+            my $next_ii = ($current_ii + 1) % @albums;
+            $resume_album = $albums[$next_ii];
+            $resume_offset = 0;
+         }
+         $do_restart = 1;
+         &led_track_blink();
+         $track_blink_until = Time::HiRes::time() + 0.15;
+         kill(9, -$play_id) if $play_id > 0;
+      } elsif ($g_prev_or_restart) {
+         $g_prev_or_restart = 0;
+         my $now = $g_prev_or_restart_time;
+         my $effective_pause = $total_pause_time + ($paused ? ($now - $pause_start) : 0);
+         my $album_time = $play_start_offset + ($now - $start_time - $effective_pause);
+         my $track_idx = 0;
+         for my $i (0 .. $#$offsets) {
+            last if $offsets->[$i] > $album_time;
+            $track_idx = $i;
+         }
+         my $track_start = $offsets->[$track_idx];
+         my $track_time = $album_time - $track_start;
+         if ($track_idx == 0 && $track_time <= 5) {
+            $do_previous = 1;
+         } else {
+            $do_restart = 1;
+            $resume_album = $play_album;
+            $resume_offset = 0;
+         }
+         print("DEBUG: B+Y track_idx=$track_idx track_time=$track_time do_previous=$do_previous do_restart=$do_restart\n") if $ENV{PIDAP_DEBUG};
+         kill(9, -$play_id) if $play_id > 0;
+      } elsif (-e qq#${RUN_DIR}/pidap.generated.previous_track#) {
+         my $now = Time::HiRes::time();
+         my $effective_pause = $total_pause_time + ($paused ? ($now - $pause_start) : 0);
+         my $album_time = $play_start_offset + ($now - $start_time - $effective_pause);
+         my $track_idx = 0;
+         for my $i (0 .. $#$offsets) {
+            last if $offsets->[$i] > $album_time;
+            $track_idx = $i;
+         }
+         my $track_start = $offsets->[$track_idx];
+         my $track_time = $album_time - $track_start;
+         $do_restart = &resolve_previous_track($play_album, $play_start_offset, $album_time, $offsets, $current_ii, $albums_ref, $album_offsets_cache_ref);
+         print("DEBUG: previous_track track_idx=$track_idx track_time=$track_time resume_offset=$resume_offset resume_album=$resume_album\n") if $ENV{PIDAP_DEBUG};
+         kill(9, -$play_id);
+      } elsif (-e qq#${RUN_DIR}/pidap.generated.previous# || -e qq#${RUN_DIR}/pidap.generated.restart#) {
+         kill(9, -$play_id);
+      }
+
       my $now = Time::HiRes::time();
       if ($track_blink_until && $now >= $track_blink_until) {
          &led_off();
          $track_blink_until = 0;
       }
-      my $consumed = 0;
-      if ($menu_result_file && -e $menu_result_file) {
-         if (open(my $rf, '<', $menu_result_file)) {
-            my $line = <$rf>;
-            close($rf);
-            unlink($menu_result_file);
+
+      # Block until an event arrives (SIG_R, menu_out, or pause FIFO).
+      my @ready;
+      while (1) {
+         @ready = $sel->can_read();
+         last if @ready;
+         # can_read can return empty if interrupted by a signal without
+         # writing to the pipe.  In that case loop back, reap, and retry.
+         last if $! != EINTR;
+      }
+      for my $fh (@ready) {
+         if (fileno($fh) == fileno($SIG_R)) {
+            my $buf;
+            sysread($SIG_R, $buf, 256);  # drain signal bytes
+         } elsif (defined $menu_out_fh && fileno($fh) == fileno($menu_out_fh)) {
+            my $line = <$menu_out_fh>;
             if (defined $line) {
                chomp $line;
                if ($line =~ /^album=(.+?)\toffset=([0-9.]+)/) {
                   $resume_album = $1;
                   $resume_offset = $2;
                   $do_menu_select = 1;
-                  print("DEBUG: menu result (file) album=$resume_album offset=$resume_offset\n") if $ENV{PIDAP_DEBUG};
+                  print("DEBUG: menu result album=$resume_album offset=$resume_offset\n") if $ENV{PIDAP_DEBUG};
                   kill(9, -$play_id) if $play_id > 0;
                } elsif ($line =~ /^cancel=1/) {
                   # ignore
                }
             }
-         }
-         $consumed = 1;
-      }
-      if (!$consumed && $sel) {
-         my @ready = $sel->can_read($POLL);
-         for my $fh (@ready) {
-            if (fileno($fh) == fileno($menu_out_fh)) {
-               my $line = <$menu_out_fh>;
-               if (defined $line) {
-                  $consumed = 1;
-                  chomp $line;
-                  if ($line =~ /^album=(.+?)\toffset=([0-9.]+)/) {
-                     $resume_album = $1;
-                     $resume_offset = $2;
-                     $do_menu_select = 1;
-                     print("DEBUG: menu result (fifo) album=$resume_album offset=$resume_offset\n") if $ENV{PIDAP_DEBUG};
-                     kill(9, -$play_id) if $play_id > 0;
-                  } elsif ($line =~ /^cancel=1/) {
-                     # ignore
-                  }
-               }
-            } elsif (fileno($fh) == fileno($pause_fh)) {
-               my $line = <$pause_fh>;
-               if (defined $line) {
-                  chomp $line;
-                  if ($line =~ /^pause=([01])/) {
-                     $consumed = 1;
-                     if ($1 && !$paused) {
-                        $paused = 1;
-                        $pause_start = Time::HiRes::time();
-                     } elsif (!$1 && $paused) {
-                        $paused = 0;
-                        $total_pause_time += (Time::HiRes::time() - $pause_start);
-                     }
+         } elsif (defined $pause_fh && fileno($fh) == fileno($pause_fh)) {
+            my $line = <$pause_fh>;
+            if (defined $line) {
+               chomp $line;
+               if ($line =~ /^pause=([01])/) {
+                  if ($1 && !$paused) {
+                     $paused = 1;
+                     $pause_start = Time::HiRes::time();
+                  } elsif (!$1 && $paused) {
+                     $paused = 0;
+                     $total_pause_time += (Time::HiRes::time() - $pause_start);
                   }
                }
             }
          }
       }
-      Time::HiRes::usleep($POLL * 1_000_000) unless $consumed;
    }
 
    # Catch a previous_track request that arrived after the play process died,
@@ -816,7 +821,7 @@ sub monitor_playback {
 }
 
 sub play_one_album {
-   my ($play_album, $current_ii, $albums_ref, $volume_initialized_ref, $album_offsets_cache_ref, $sel, $menu_out_fh, $pause_fh, $menu_result_file) = @_;
+   my ($play_album, $current_ii, $albums_ref, $volume_initialized_ref, $album_offsets_cache_ref, $sel, $menu_out_fh, $pause_fh) = @_;
    unlink(qq#${RUN_DIR}/pidap.generated.restart#) if -e qq#${RUN_DIR}/pidap.generated.restart#;
    my ($files, $durations, $offsets, $total);
    if (exists $album_offsets_cache_ref->{$play_album}) {
@@ -839,6 +844,7 @@ sub play_one_album {
       $first_lp = 0;
    }
    my $play_id = &start_playback($play_album, $play_start_offset, $files, $durations);
+   $g_play_pid = $play_id;
    $resume_album = q{};
    $resume_offset = 0;
    unlink($resume_file) if -e $resume_file;
@@ -849,8 +855,9 @@ sub play_one_album {
    my $do_menu_select = 0;
    if ($play_id > 0) {
       ($do_previous, $do_restart, $do_menu_select) =
-         &monitor_playback($play_id, $play_start_offset, $play_album, $offsets, $current_ii, $albums_ref, $album_offsets_cache_ref, $sel, $menu_out_fh, $pause_fh, $menu_result_file);
+         &monitor_playback($play_id, $play_start_offset, $play_album, $offsets, $current_ii, $albums_ref, $album_offsets_cache_ref, $sel, $menu_out_fh, $pause_fh);
    }
+   $g_play_pid = 0;
    print("DEBUG: before return do_previous=$do_previous do_restart=$do_restart\n") if $ENV{PIDAP_DEBUG};
    return q#next# if $do_menu_select;
    if ($do_previous || -e qq#${RUN_DIR}/pidap.generated.previous#) {
@@ -883,7 +890,6 @@ sub play_albums() {
  my $volume_initialized = 0;
  my %album_offsets_cache = ();
  my $menu_out_fh;
- my $menu_result_file = "$RUN_DIR/pidap.generated.menu_result";
  sysopen($menu_out_fh, "$RUN_DIR/pidap.generated.menu_out", O_RDWR|O_NONBLOCK) or warn "cannot open menu_out FIFO: $!";
  my $pause_fh;
  my $pause_fifo = "$RUN_DIR/pidap.generated.pause";
@@ -894,10 +900,9 @@ sub play_albums() {
      POSIX::mkfifo($pause_fifo, 0666) or warn "cannot create pause FIFO $pause_fifo: $!";
  }
  sysopen($pause_fh, $pause_fifo, O_RDWR|O_NONBLOCK) or warn "cannot open pause FIFO: $!";
- my $sel;
- if (defined $menu_out_fh && defined $pause_fh) {
-     $sel = IO::Select->new($menu_out_fh, $pause_fh);
- }
+ my $sel = IO::Select->new($SIG_R);
+ $sel->add($menu_out_fh) if defined $menu_out_fh;
+ $sel->add($pause_fh) if defined $pause_fh;
 
  # Resume from the actual last-played album if we can find it in
  # the current playlist.  A stale place index (from an old playlist)
@@ -932,7 +937,7 @@ sub play_albums() {
   }
   print("Album Name($ii): $albums[$ii]\n");
   &write_place_file($place_file, $ii);
-  my $action = &play_one_album($albums[$ii], $ii, \@albums, \$volume_initialized, \%album_offsets_cache, $sel, $menu_out_fh, $pause_fh, $menu_result_file);
+  my $action = &play_one_album($albums[$ii], $ii, \@albums, \$volume_initialized, \%album_offsets_cache, $sel, $menu_out_fh, $pause_fh);
   if ($action eq q#prev#) {
    if ($ii > 0) { $ii--; } else { $ii = $#albums; }
   } elsif ($action eq q#restart#) {
