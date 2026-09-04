@@ -1,6 +1,7 @@
 #!/bin/sh
 
 PIDAP_DATA_DIR="${PIDAP_DATA_DIR:-/var/lib/pidap}"
+PIDAP_RUN_DIR="${PIDAP_RUN_DIR:-/run/pidap}"
 LOG_DIR="${PIDAP_DATA_DIR}/pidap-logs"
 TMP_DIR="/tmp/pidap-logs-$$"
 
@@ -28,12 +29,13 @@ log_file "ps" "ps -o pid,comm,args 2>/dev/null || ps -o pid,comm || ps"
 log_file "lsmod" "lsmod"
 log_file "env" "env"
 log_file "interfaces" "cat /etc/network/interfaces 2>/dev/null || echo no interfaces"
-log_file "pidap_debug" "tail -n 200 \"$PIDAP_DATA_DIR/pidap.debug\" 2>/dev/null || echo no pidap debug log"
+log_file "pidap_debug" "tail -n 200 \"$PIDAP_RUN_DIR/pidap.debug\" 2>/dev/null || echo no pidap debug log"
 
 rm -rf "$LOG_DIR"
 mkdir -p "$LOG_DIR" || { echo "Cannot create $LOG_DIR" >&2; rm -rf "$TMP_DIR"; exit 1; }
 
 cp -r "$TMP_DIR"/* "$LOG_DIR/"
+sync "$LOG_DIR"
 rm -rf "$TMP_DIR"
 
 echo "$LOG_DIR"
