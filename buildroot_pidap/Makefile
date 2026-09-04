@@ -4,6 +4,10 @@ BR2_EXTERNAL := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 CARD       ?= /dev/sdg
 # Cap the user-data partition to this many GiB (0 = use rest of the card).
 MAX_USERDATA_G ?= 0
+# Size of the small pidap metadata partition in MiB (default 1; 512K is too small for ext4).
+PIDAP_DATA_SIZE_M ?= 1
+
+export PIDAP_DATA_SIZE_M
 
 # Music to bundle into the user-data partition image during build.
 # The default source is the NAS library; override if your music lives elsewhere.
@@ -49,9 +53,9 @@ check:
 		else \
 			echo "Warning: $${card}1 does not exist yet"; \
 		fi; \
-		if [ -b "$${card}3" ]; then \
-			label=$$(sudo blkid -s LABEL -o value "$${card}3" 2>/dev/null || true); \
-			if [ -n "$$label" ] && [ "$$label" != "user-data" ]; then echo "Warning: $${card}3 label is \"$$label\""; fi; \
+		if [ -b "$${card}4" ]; then \
+			label=$$(sudo blkid -s LABEL -o value "$${card}4" 2>/dev/null || true); \
+			if [ -n "$$label" ] && [ "$$label" != "user-data" ]; then echo "Warning: $${card}4 label is \"$$label\""; fi; \
 		fi; \
 		echo "$$card is a block device -- continue with care" \
 	'
@@ -62,15 +66,15 @@ check-data:
 		card="$(CARD)"; \
 		if [ ! -b "$$card" ]; then echo "ERROR: $$card is not a block device"; exit 1; fi; \
 		echo "Checking $$card data partition..."; \
-		if [ ! -b "$${card}3" ]; then echo "ERROR: $${card}3 does not exist"; exit 1; fi; \
-		label=$$(sudo blkid -s LABEL -o value "$${card}3" 2>/dev/null || true); \
-		if [ "$$label" != "user-data" ]; then echo "ERROR: $${card}3 label is \"$$label\", expected \"user-data\""; exit 1; fi; \
+		if [ ! -b "$${card}4" ]; then echo "ERROR: $${card}4 does not exist"; exit 1; fi; \
+		label=$$(sudo blkid -s LABEL -o value "$${card}4" 2>/dev/null || true); \
+		if [ "$$label" != "user-data" ]; then echo "ERROR: $${card}4 label is \"$$label\", expected \"user-data\""; exit 1; fi; \
 		echo "$$card data partition looks correct -- safe to flash data" \
 	'
 
 
 check-card:
-	@for p in 1 2 3; do \
+	@for p in 1 2 3 4; do \
 		dev="$(CARD)$$p"; \
 		if [ ! -b "$$dev" ]; then \
 			echo "Error: $$dev is not a block device (card missing or stale file)"; \
@@ -84,16 +88,16 @@ check-card:
 	done
 
 sdcard: defconfig check check-card
-	-for p in 1 2 3; do sudo umount $(CARD)$$p 2>/dev/null || true; done
+	-for p in 1 2 3 4; do sudo umount $(CARD)$$p 2>/dev/null || true; done
 	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)" BR2_EXTERNAL=$(BR2_EXTERNAL)
-	sudo CARD=$(CARD) MAX_USERDATA_G=$(MAX_USERDATA_G) ./flash-sdcard.sh all
+	sudo CARD=$(CARD) MAX_USERDATA_G=$(MAX_USERDATA_G) PIDAP_DATA_SIZE_M=$(PIDAP_DATA_SIZE_M) ./flash-sdcard.sh all
 	@if [ "$(DEPLOY_NFS)" = "1" ]; then \
 		sudo ./deploy-nfs.sh; \
 		ssh-keygen -f /home/rodney/.ssh/known_hosts -R 192.168.0.31 2>/dev/null || true; \
 	fi
 
 sdcard-boot: defconfig check check-card
-	-for p in 1 2 3; do sudo umount $(CARD)$$p 2>/dev/null || true; done
+	-for p in 1 2 3 4; do sudo umount $(CARD)$$p 2>/dev/null || true; done
 	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)" BR2_EXTERNAL=$(BR2_EXTERNAL)
 	sudo dd if=$(BUILDROOT_DIR)/output/images/boot.vfat of=$(CARD)1 bs=4M status=progress conv=fsync
 	@if [ "$(DEPLOY_NFS)" = "1" ]; then \
@@ -102,10 +106,10 @@ sdcard-boot: defconfig check check-card
 	fi
 
 sdcard-system: defconfig check check-card
-	-for p in 1 2 3; do sudo umount $(CARD)$$p 2>/dev/null || true; done
+	-for p in 1 2 3 4; do sudo umount $(CARD)$$p 2>/dev/null || true; done
 	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)" BR2_EXTERNAL=$(BR2_EXTERNAL)
 	# Clean the existing user-data partition if it is dirty; we don't fsck on the Pi.
-	-sudo fsck.vfat -a $(CARD)3 2>/dev/null || sudo fsck.fat -a $(CARD)3 2>/dev/null || true
+	-sudo fsck.vfat -a $(CARD)4 2>/dev/null || sudo fsck.fat -a $(CARD)4 2>/dev/null || true
 	cp $(BUILDROOT_DIR)/output/images/boot.vfat $(BUILDROOT_DIR)/output/images/boot-sd.vfat
 	MTOOLS_SKIP_CHECK=1 mcopy -o -i $(BUILDROOT_DIR)/output/images/boot-sd.vfat $(BR2_EXTERNAL)/board/PIDAP/cmdline-sd.txt ::cmdline.txt
 	sudo dd if=$(BUILDROOT_DIR)/output/images/boot-sd.vfat of=$(CARD)1 bs=4M status=progress conv=fsync
@@ -113,10 +117,10 @@ sdcard-system: defconfig check check-card
 	sudo dd if=$(BUILDROOT_DIR)/output/images/rootfs.ext2 of=$(CARD)2 bs=4M status=progress conv=fsync
 
 sdcard-data: defconfig check-data check-card
-	-for p in 1 2 3; do sudo umount $(CARD)$$p 2>/dev/null || true; done
+	-for p in 1 2 3 4; do sudo umount $(CARD)$$p 2>/dev/null || true; done
 	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)" BR2_EXTERNAL=$(BR2_EXTERNAL)
 	# Clean the user-data partition before writing data.
-	-sudo fsck.vfat -a $(CARD)3 2>/dev/null || sudo fsck.fat -a $(CARD)3 2>/dev/null || true
+	-sudo fsck.vfat -a $(CARD)4 2>/dev/null || sudo fsck.fat -a $(CARD)4 2>/dev/null || true
 	sudo CARD=$(CARD) ./flash-sdcard.sh data
 
 # Prepare a card with a sensibly small user-data partition.  If

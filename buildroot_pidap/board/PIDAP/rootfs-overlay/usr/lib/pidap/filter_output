@@ -2,6 +2,7 @@
 
 use FindBin;
 
+my $RUN_DIR = $ENV{PIDAP_RUN_DIR} || $FindBin::Bin;
 my ($last_artist, $last_album, $last_track);
 print "\e[2J\e[H";
 

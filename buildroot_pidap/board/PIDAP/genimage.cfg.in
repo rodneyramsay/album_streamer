@@ -23,6 +23,11 @@ image sdcard.img {
 	}
 
 	# Writable user partition for music / Perl scripts
+	partition pidap-data {
+		partition-type = 0x83
+		image = "pidap-data.ext4"
+	}
+
 	partition user-data {
 		partition-type = 0x83
 		image = "user-data.ext4"

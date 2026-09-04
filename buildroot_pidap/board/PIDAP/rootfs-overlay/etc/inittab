@@ -10,5 +10,5 @@
 ttyAMA0::respawn:/sbin/getty -L ttyAMA0 115200 vt100
 
 # Standard actions
-::shutdown:/bin/sh -c '/etc/init.d/S99pidap stop; sync; umount /usr/local/Music 2>/dev/null || mount -o remount,ro /usr/local/Music 2>/dev/null; umount -a -r'
+::shutdown:/bin/sh -c '/etc/init.d/S99pidap stop; sync; umount /var/lib/pidap 2>/dev/null || mount -o remount,ro /var/lib/pidap 2>/dev/null; umount /usr/local/Music 2>/dev/null || mount -o remount,ro /usr/local/Music 2>/dev/null; umount -a -r'
 ::restart:/sbin/init

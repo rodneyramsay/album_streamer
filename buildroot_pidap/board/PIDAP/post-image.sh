@@ -65,10 +65,11 @@ fi
 trap 'rm -rf "${ROOTPATH_TMP}"' EXIT
 ROOTPATH_TMP="$(mktemp -d)"
 
-# Create the writable /usr/local music partition image
+# Create the writable music and pidap metadata partition images
 FAKEROOT="${HOST_DIR:-}/bin/fakeroot"
 [ -x "${FAKEROOT}" ] || FAKEROOT="fakeroot"
 "${FAKEROOT}" -- "${BOARD_DIR}/mkuserimg.sh"
+"${FAKEROOT}" -- "${BOARD_DIR}/mkmetaimg.sh"
 
 rm -rf "${GENIMAGE_TMP}"
 

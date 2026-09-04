@@ -8,7 +8,7 @@ case "$1" in
         export PIDAP_NO_SYSTEMD=1
         export PIDAP_INITIAL_VOLUME=40
         export PIDAP_RUN_DIR=/run/pidap
-        export PIDAP_DATA_DIR=/usr/local/Music
+        export PIDAP_DATA_DIR=/var/lib/pidap
         mkdir -p "$PIDAP_RUN_DIR"
         /sbin/start-stop-daemon -S -b -m -p "$PIDFILE" -x "$DAEMON"
         ;;

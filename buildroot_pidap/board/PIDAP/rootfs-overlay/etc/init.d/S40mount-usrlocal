@@ -1,38 +1,49 @@
 #!/bin/sh
 #
-# Mount the SD user-data partition on /usr/local/Music.
-# S00mount runs too early (before /dev/mmcblk0p3 exists),
-# so we handle the music mount here, well before pidap starts.
+# Mount the SD metadata partition on /var/lib/pidap and the music
+# partition on /usr/local/Music.
+# S00mount runs too early (before /dev/mmcblk0pN exists),
+# so we handle the SD card mounts here, well before pidap starts.
 #
 
 case "$1" in
     start)
-        mkdir -p /usr/local/Music
+        mkdir -p /var/lib/pidap /usr/local/Music
         for i in $(seq 1 30); do
-            if [ -b /dev/mmcblk0p3 ]; then
+            if [ -b /dev/mmcblk0p3 ] && [ -b /dev/mmcblk0p4 ]; then
+                # p3 is the small ext4 pidap-data partition (writable metadata)
+                if mountpoint -q /var/lib/pidap; then
+                    umount /var/lib/pidap 2>/dev/null || true
+                fi
+
+                mount -o rw /dev/mmcblk0p3 /var/lib/pidap
+
+                if ! touch /var/lib/pidap/.rwtest 2>/dev/null; then
+                    echo "S40mount-usrlocal: /var/lib/pidap is read-only, forcing remount" >&2
+                    mount -o remount,rw /dev/mmcblk0p3 /var/lib/pidap || true
+                fi
+
+                if touch /var/lib/pidap/.rwtest 2>/dev/null; then
+                    rm -f /var/lib/pidap/.rwtest
+                else
+                    echo "S40mount-usrlocal: /var/lib/pidap is still read-only" >&2
+                fi
+
+                # p4 is the user-data (music) partition; mount it read-only
+                # so an unclean shutdown cannot corrupt the FAT filesystem.
                 if mountpoint -q /usr/local/Music; then
                     umount /usr/local/Music 2>/dev/null || true
                 fi
 
-                mount -o rw /dev/mmcblk0p3 /usr/local/Music
-
-                # Some filesystems (especially a dirty vfat) may still come up
-                # read-only despite the rw option. Try to remount rw if so.
-                if ! touch /usr/local/Music/.rwtest 2>/dev/null; then
-                    echo "S40mount-usrlocal: /usr/local/Music is read-only, forcing remount" >&2
-                    mount -o remount,rw /dev/mmcblk0p3 /usr/local/Music || true
+                if ! mount -o ro /dev/mmcblk0p4 /usr/local/Music; then
+                    echo "S40mount-usrlocal: could not mount /usr/local/Music read-only" >&2
                 fi
 
-                if touch /usr/local/Music/.rwtest 2>/dev/null; then
-                    rm -f /usr/local/Music/.rwtest
-                    exit 0
-                else
-                    echo "S40mount-usrlocal: /usr/local/Music is still read-only" >&2
-                fi
+                exit 0
             fi
             sleep 0.5
         done
-        echo "S40mount-usrlocal: /dev/mmcblk0p3 did not appear" >&2
+        echo "S40mount-usrlocal: /dev/mmcblk0p3 or /dev/mmcblk0p4 did not appear" >&2
         ;;
     *)
         ;;

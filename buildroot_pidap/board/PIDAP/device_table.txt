@@ -2,3 +2,4 @@
 # <path>                    <type> <mode> <uid> <gid> <major> <minor> <start> <inc> <count>
 /usr/local                  d      775    0     0     -       -       -       -     -
 /usr/local/Music            d      775    0     0     -       -       -       -     -
+/var/lib/pidap              d      755    0     0     -       -       -       -     -
