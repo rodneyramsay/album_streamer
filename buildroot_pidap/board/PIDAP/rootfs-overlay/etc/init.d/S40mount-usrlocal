@@ -16,11 +16,17 @@ case "$1" in
                     umount /var/lib/pidap 2>/dev/null || true
                 fi
 
-                mount -o rw /dev/mmcblk0p3 /var/lib/pidap
+                # Repair any corruption from the previous unclean shutdown.
+                # p3 is only 1 MiB, so this is quick and makes power-cycle
+                # robustness much better on a journal-less ext4 filesystem.
+                e2fsck -y /dev/mmcblk0p3 >/dev/null 2>&1 || true
+
+                # Mount with sync so metadata writes survive unclean shutdowns.
+                mount -o rw,sync /dev/mmcblk0p3 /var/lib/pidap
 
                 if ! touch /var/lib/pidap/.rwtest 2>/dev/null; then
                     echo "S40mount-usrlocal: /var/lib/pidap is read-only, forcing remount" >&2
-                    mount -o remount,rw /dev/mmcblk0p3 /var/lib/pidap || true
+                    mount -o remount,rw,sync /dev/mmcblk0p3 /var/lib/pidap || true
                 fi
 
                 if touch /var/lib/pidap/.rwtest 2>/dev/null; then

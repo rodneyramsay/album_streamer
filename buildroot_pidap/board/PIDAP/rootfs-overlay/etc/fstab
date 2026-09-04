@@ -1,3 +1,3 @@
 # <file system> <mount point>      <type>  <options>                  <dump> <pass>
-/dev/mmcblk0p3  /var/lib/pidap     ext4    noauto,rw,defaults         0      0
+/dev/mmcblk0p3  /var/lib/pidap     ext4    noauto,rw,sync           0      0
 /dev/mmcblk0p4  /usr/local/Music   auto    noauto,ro,defaults         0      0
