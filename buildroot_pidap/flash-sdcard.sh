@@ -44,23 +44,27 @@ ROOTFS_BYTES=$(wc -c < "${IMAGES_DIR}/rootfs.ext2")
 ROOTFS_M=$(( (ROOTFS_BYTES + 1048575) / 1048576 + 10 ))
 ROOTFS_PART_M=$(( ROOTFS_M - PIDAP_DATA_SIZE_M ))
 
-# Optional user-data partition cap in GiB (0 = size the partition to the image).
+# Optional user-data partition cap in GiB (0 = use the rest of the card).
 MAX_USERDATA_G="${MAX_USERDATA_G:-0}"
 USERDATA_IMG_BYTES=$(wc -c < "${IMAGES_DIR}/user-data.ext4")
 USERDATA_IMG_M=$(( (USERDATA_IMG_BYTES + 1048575) / 1048576 ))
-# Add a small margin for VFAT filesystem overhead / rounding.
-USERDATA_PART_M=$(( USERDATA_IMG_M + 64 ))
+# Minimum partition size: image plus a small margin for VFAT filesystem overhead.
+USERDATA_MIN_M=$(( USERDATA_IMG_M + 64 ))
+USERDATA_PART_M=${USERDATA_MIN_M}
 if [ "${MAX_USERDATA_G}" -gt 0 ] 2>/dev/null; then
     CAP_M=$(( MAX_USERDATA_G * 1024 ))
-    if [ "${USERDATA_PART_M}" -gt "${CAP_M}" ]; then
-        echo "Warning: user-data partition needs ${USERDATA_PART_M}M but cap is ${CAP_M}M; using ${USERDATA_PART_M}M"
+    if [ "${USERDATA_MIN_M}" -gt "${CAP_M}" ]; then
+        echo "Warning: user-data image needs ${USERDATA_MIN_M}M but cap is ${CAP_M}M; using ${USERDATA_MIN_M}M"
     else
-        echo "User-data partition cap is ${CAP_M}M; image fits in ${USERDATA_PART_M}M"
+        echo "User-data partition cap is ${CAP_M}M; image fits in ${USERDATA_MIN_M}M"
+        USERDATA_PART_M=${CAP_M}
     fi
+    SFDISK_USERDATA_LINE=", ${USERDATA_PART_M}M, 83,"
 else
-    echo "Sizing user-data partition to ${USERDATA_PART_M}M (image + 64M margin)"
+    echo "User-data image is ${USERDATA_IMG_M}M; user-data partition will use rest of card"
+    # An empty size field in the last sfdisk line means "use the rest of the disk".
+    SFDISK_USERDATA_LINE=",,83,"
 fi
-USERDATA_SIZE_SFDISK="${USERDATA_PART_M}M"
 
 echo "Flashing ${CARD}..."
 
@@ -77,7 +81,7 @@ if [ "$1" = "all" ]; then
 , 128M, c, *
 , ${ROOTFS_PART_M}M, 83,
 , ${PIDAP_DATA_SIZE_M}M, 83,
-, ${USERDATA_SIZE_SFDISK}, 83,
+${SFDISK_USERDATA_LINE}
 EOF
     partprobe "${CARD}" 2>/dev/null || true
     sleep 1
