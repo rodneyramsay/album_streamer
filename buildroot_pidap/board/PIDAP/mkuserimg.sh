@@ -81,6 +81,71 @@ else
     echo "No music includes specified, creating empty user-data partition"
 fi
 
+# Copy license/source info into the user-data image.
+LIC_FILE="$(dirname "$0")/../../license/GPLv2_License.txt"
+LEGAL_INFO_DIR="${BINARIES_DIR%/*}/legal-info"
+if [ -f "${LIC_FILE}" ]; then
+    mkdir -p "${STAGING}/legal-info/licenses"
+    cp -f "${LIC_FILE}" "${STAGING}/legal-info/licenses/GPL-2.0"
+fi
+if [ -d "${LEGAL_INFO_DIR}" ]; then
+    echo "Including BusyBox source, all license files, and build metadata"
+    mkdir -p "${STAGING}/legal-info/sources" "${STAGING}/legal-info/licenses"
+    for src in "${LEGAL_INFO_DIR}/sources/busybox-"*; do
+        if [ -d "${src}" ]; then
+            cp -a "${src}" "${STAGING}/legal-info/sources/"
+            echo "Source: ${src}"
+        fi
+    done
+    if [ -d "${LEGAL_INFO_DIR}/licenses" ]; then
+        cp -a "${LEGAL_INFO_DIR}/licenses/." "${STAGING}/legal-info/licenses/"
+    fi
+    for f in manifest.csv buildroot.config legal-info.sha256 README; do
+        if [ -f "${LEGAL_INFO_DIR}/${f}" ]; then
+            cp -a "${LEGAL_INFO_DIR}/${f}" "${STAGING}/legal-info/"
+            echo "Build file: ${f}"
+        fi
+    done
+fi
+mkdir -p "${STAGING}/legal-info"
+cat > "${STAGING}/legal-info/SOURCE" <<'EOF'
+PIDAP source and build files:
+https://github.com/rodneyramsay/album_streamer
+
+BusyBox source is included on this card in legal-info/sources/busybox-*
+EOF
+cat > "${STAGING}/legal-info/README.thirdparty" <<'EOF'
+Third-party components used in this build:
+
+Raspberry Pi firmware:
+  https://github.com/raspberrypi/firmware
+  License files in legal-info/licenses/rpi-firmware-*/
+
+Bootlin external toolchain:
+  https://toolchains.bootlin.com/
+  License files in legal-info/licenses/toolchain-external-*/
+
+Linux kernel (source available on request):
+  https://github.com/raspberrypi/linux
+  License files in legal-info/licenses/linux-custom/
+
+Splash image:
+  NASA C-1990-7066
+  https://archive.org/details/C-1990-7066
+EOF
+
+# Recompute image size if not overridden to include legal info.
+if [ -z "${USERDATA_SIZE}" ]; then
+    DATA_BYTES=$(du -sb "${STAGING}" | awk '{print $1}')
+    if [ "${DATA_BYTES}" -gt 0 ]; then
+        WANTED=$(( DATA_BYTES + DATA_BYTES / 5 ))
+        WANTED=$(( (WANTED + 67108863) / 67108864 * 67108864 ))
+        MIN=$(( 128 * 1024 * 1024 ))
+        [ "${WANTED}" -lt "${MIN}" ] && WANTED=${MIN}
+        IMAGE_SIZE="${WANTED}"
+    fi
+fi
+
 # Prefer buildroot's host mkfs.ext4, but allow PATH fallback
 if [ -x "${HOST_DIR:-}/sbin/mkfs.ext4" ]; then
     MKFS_EXT4="${HOST_DIR}/sbin/mkfs.ext4"

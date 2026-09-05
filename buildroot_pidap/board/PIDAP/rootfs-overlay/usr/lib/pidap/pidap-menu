@@ -206,6 +206,61 @@ sub restore_display {
     }
 }
 
+my @LEGAL_INFO_DIRS = ('/usr/local/Music/legal-info', '/usr/share/legal-info');
+
+sub load_license_items {
+    my @items = ();
+    my @paths = ();
+    for my $dir (@LEGAL_INFO_DIRS) {
+        next unless -d $dir;
+        if (-f "$dir/SOURCE") {
+            push @items, 'Project Source';
+            push @paths, "$dir/SOURCE";
+        }
+        for my $f (sort glob("$dir/licenses/*")) {
+            next unless -f $f && -T $f;
+            (my $name = $f) =~ s{^.*/}{};
+            push @items, "License: $name";
+            push @paths, $f;
+        }
+        for my $f (sort (glob("$dir/README*"), glob("$dir/manifest.csv"))) {
+            next unless -f $f && -T $f;
+            (my $name = $f) =~ s{^.*/}{};
+            push @items, $name;
+            push @paths, $f;
+        }
+    }
+    unless (@items) {
+        @items = ('No license info found');
+        @paths = ('');
+    }
+    return (\@items, \@paths);
+}
+
+sub read_license_lines {
+    my ($path) = @_;
+    my @raw = ();
+    if ($path && open(my $fh, '<', $path)) {
+        while (<$fh>) {
+            s/\r?\n$//;
+            push @raw, $_;
+        }
+        close($fh);
+    }
+    unless (@raw) {
+        return ('Could not read license file');
+    }
+    my @lines = ();
+    for my $l (@raw) {
+        while (length($l) > $MENU_ITEM_MAX) {
+            push @lines, substr($l, 0, $MENU_ITEM_MAX);
+            $l = substr($l, $MENU_ITEM_MAX);
+        }
+        push @lines, $l if length($l) > 0 || scalar(@lines) == 0;
+    }
+    return @lines;
+}
+
 sub run_menu {
     my ($albums_ref, $current_album_idx) = @_;
 
@@ -309,8 +364,11 @@ sub run_menu {
     my $hscroll_last = 0;
 
     my $in_system = 0;
+    my $in_license_list = 0;
+    my $in_license_view = 0;
     my $in_playlist = 0;
     my $in_playlist_menu = 0;
+    my (@license_items, @license_paths, @license_lines, $license_title);
     my $playlist_album_idx = $current_album_idx;
     my $top_selected = $current_genre_idx + 2;
 
@@ -327,8 +385,14 @@ sub run_menu {
         if ($in_playlist_menu) {
             @items = ('Browse Playlist', 'Restart List Jump', 'Random List Jump', 'Generate Random Playlist', 'Generate Alpha-numeric Playlist');
             $title = 'Playlist';
+        } elsif ($in_license_view) {
+            @items = @license_lines;
+            $title = $license_title;
+        } elsif ($in_license_list) {
+            @items = @license_items;
+            $title = 'License';
         } elsif ($in_system) {
-            @items = ('Generate Logs');
+            @items = ('License', 'Generate Logs');
             $title = 'System';
         } elsif ($level == 0) {
             @items = ('System', 'Playlist', map { my $p = $_; $p =~ s{^.*/}{}; $p; } @genres);
@@ -430,6 +494,15 @@ sub run_menu {
                 $level = 0;
                 $selected = 1;
                 next;
+            } elsif ($in_license_view) {
+                $in_license_view = 0;
+                $in_license_list = 1;
+                next;
+            } elsif ($in_license_list) {
+                $in_license_list = 0;
+                $in_system = 1;
+                $selected = 0;
+                next;
             } elsif ($in_system) {
                 $in_system = 0;
                 $level = 0;
@@ -510,14 +583,37 @@ sub run_menu {
                     &restart_playback();
                     last;
                 }
+            } elsif ($in_license_view) {
+                $in_license_view = 0;
+                $in_license_list = 1;
+                next;
+            } elsif ($in_license_list) {
+                my $path = $license_paths[$selected] // '';
+                if ($path) {
+                    $license_title = $license_items[$selected];
+                    @license_lines = read_license_lines($path);
+                    $in_license_view = 1;
+                    $in_license_list = 0;
+                    $selected = 0;
+                }
+                next;
             } elsif ($in_system) {
-                &display_menu_list('Collecting...', ['Generate Logs'], 0, 13);
-                my $log_dir = `"$FindBin::Bin/pidap-logs"`;
-                chomp($log_dir) if defined $log_dir;
-                $log_dir ||= 'unknown';
-                &display_menu_list('Done', ["Logs: $log_dir"], 0, 13);
-                sleep 1;
-                last;
+                if ($selected == 0) {
+                    my ($it, $pa) = load_license_items();
+                    @license_items = @$it;
+                    @license_paths = @$pa;
+                    $in_license_list = 1;
+                    $selected = 0;
+                    next;
+                } elsif ($selected == 1) {
+                    &display_menu_list('Collecting...', ['Generate Logs'], 0, 13);
+                    my $log_dir = `"$FindBin::Bin/pidap-logs"`;
+                    chomp($log_dir) if defined $log_dir;
+                    $log_dir ||= 'unknown';
+                    &display_menu_list('Done', ["Logs: $log_dir"], 0, 13);
+                    sleep 1;
+                    last;
+                }
             } elsif ($level == 0) {
                 if ($selected == 0) {
                     $in_system = 1;

@@ -37,6 +37,13 @@ defconfig:
 	@test -f $(BR2_EXTERNAL)/configs/$(DEFCONFIG) || { echo "No such defconfig: configs/$(DEFCONFIG)"; exit 1; }
 	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)" BR2_EXTERNAL=$(BR2_EXTERNAL) $(DEFCONFIG)
 
+legal-info: defconfig
+	@if [ -d $(BUILDROOT_DIR)/output/legal-info ]; then \
+		echo "Using existing $(BUILDROOT_DIR)/output/legal-info"; \
+	else \
+		make -C $(BUILDROOT_DIR) legal-info; \
+	fi
+
 nfs:
 	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)"
 	sudo ./deploy-nfs.sh
@@ -99,7 +106,7 @@ check-card:
 		done; \
 	'
 
-sdcard: defconfig check check-card
+sdcard: defconfig check check-card legal-info
 	-for p in 1 2 3 4; do sudo umount $(CARD)$$p 2>/dev/null || true; done
 	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)" BR2_EXTERNAL=$(BR2_EXTERNAL)
 	sudo CARD=$(CARD) MAX_USERDATA_G=$(MAX_USERDATA_G) PIDAP_DATA_SIZE_M=$(PIDAP_DATA_SIZE_M) ./flash-sdcard.sh all
@@ -128,7 +135,7 @@ sdcard-system: defconfig check check-data check-card
 	rm -f $(BUILDROOT_DIR)/output/images/boot-sd.vfat
 	sudo dd if=$(BUILDROOT_DIR)/output/images/rootfs.ext2 of=$(CARD)2 bs=4M status=progress conv=fsync
 
-sdcard-data: defconfig check-data check-card
+sdcard-data: defconfig check-data check-card legal-info
 	-for p in 1 2 3 4; do sudo umount $(CARD)$$p 2>/dev/null || true; done
 	make -C $(BUILDROOT_DIR) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)" BR2_EXTERNAL=$(BR2_EXTERNAL)
 	# Clean the user-data partition before writing data.
