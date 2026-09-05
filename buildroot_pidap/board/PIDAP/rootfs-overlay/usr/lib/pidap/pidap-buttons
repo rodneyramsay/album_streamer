@@ -1,0 +1,934 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use Time::HiRes qw(usleep gettimeofday);
+use IO::Select;
+use IO::Handle;
+use IPC::Open3;
+use Fcntl;
+use FindBin;
+use lib "$FindBin::Bin/lib";
+use PIDAPAlbum qw(read_current_album);
+
+my $LOG_FILE = $ENV{PIDAP_LOG_FILE} || '/tmp/pidap_buttons.log';
+my $PID_FILE = $ENV{PIDAP_PID_FILE} || ($FindBin::Bin . '/pidap.generated.play_pid');
+my $VOLUME_CONTROL = $ENV{PIDAP_VOLUME_CONTROL} || 'Amp';
+my $VOLUME_STEP = $ENV{PIDAP_VOLUME_STEP} || 2;
+my $LOCK_HOLD_SEC = $ENV{PIDAP_LOCK_HOLD_SEC} || 2.2;
+my $MENU_HOLD_SEC = $ENV{PIDAP_MENU_HOLD_SEC} || 1.5;
+my $FALL_DEBOUNCE = $ENV{PIDAP_FALL_DEBOUNCE} || 0.25;
+my $RISE_DEBOUNCE = $ENV{PIDAP_RISE_DEBOUNCE} || 0.15;
+my $MIN_PRESS_SEC = $ENV{PIDAP_MIN_PRESS_SEC} || 0.08;
+my $BUTTON_POLL = $ENV{PIDAP_BUTTON_POLL} || 0.25;
+my $MIN_MENU_ACTION_GAP = $ENV{PIDAP_MIN_MENU_ACTION_GAP} || 0.30;
+my $MIN_VOLUME_GAP = $ENV{PIDAP_MIN_VOLUME_GAP} || 0.25;
+my $GPIO_CHIP = $ENV{PIDAP_GPIO_CHIP} || '';
+
+my @BUTTONS = (5, 6, 16, 24);
+my @LABELS = ('A', 'B', 'X', 'Y');
+
+my %PIN_TO_LABEL;
+my %LABEL_TO_PIN;
+for my $i (0 .. $#BUTTONS) {
+    $PIN_TO_LABEL{$BUTTONS[$i]} = $LABELS[$i];
+    $LABEL_TO_PIN{$LABELS[$i]} = $BUTTONS[$i];
+}
+
+my $DEFAULT_MAP = 'A:vol_up,B:vol_down,X:lock,Y:next_track';
+my $BUTTON_MAP = parse_map($ENV{PIDAP_BUTTON_MAP} || $DEFAULT_MAP);
+
+my $locked = 0;
+my $x_armed = 0;
+my $x_toggled = 0;
+my %pressed = ();
+my %press_time = ();
+my %menu_pressed = ();
+my %last_fall = ();
+my %last_rise = ();
+my $combo_active_until = 0;
+my $y_pending = 0;
+my $in_menu = 0;
+my $last_menu_action = '';
+my $last_menu_repeat = 0;
+my %last_menu_action_time = ();
+my $MENU_REPEAT_INITIAL = $ENV{PIDAP_MENU_REPEAT_INITIAL} || 0.6;
+my $MENU_REPEAT_INTERVAL = $ENV{PIDAP_MENU_REPEAT_INTERVAL} || 0.35;
+my %last_volume_time = ();
+my $pidap_pid = 0;
+my $last_play_pid = 0;
+my $album_start = 0;
+
+my $GPIOMON_FH;
+my $GPIOMON_PID = 0;
+my $GPIOMON_BUFFER = '';
+
+my $BACKLIGHT_PIN = 13;
+my $BACKLIGHT_TIMEOUT = 15.0;
+my $backlight_on = 1;
+my $backlight_last = Time::HiRes::time();
+my $backlight_timer_armed = 0;
+my $backlight_check_next = 0;
+my $BL_POWER_PATHS;
+
+# Always use our own /proc-based kill function so we are sure to hit
+# descendants of the play pid (Proc::Killfam without Proc::ProcessTable
+# would only signal the top pid).
+{ no strict 'refs'; *killfam = \&_killfam_fallback; }
+
+open(my $LOG, '>>', $LOG_FILE) or warn "Cannot open log $LOG_FILE: $!";
+$LOG->autoflush(1) if $LOG;
+STDOUT->autoflush(1);
+STDERR->autoflush(1);
+
+sub log_msg {
+    my ($msg) = @_;
+    return unless $LOG;
+    my ($sec, $usec) = gettimeofday();
+    my $ts = localtime($sec);
+    my $line = sprintf("[%s.%06d] %s", $ts, $usec, $msg);
+    print $LOG "$line\n";
+}
+
+sub parse_map {
+    my ($map_str) = @_;
+    my %map;
+    for my $part (split /,/, $map_str) {
+        if ($part =~ /^\s*([A-DXY]):\s*(\w+)\s*$/) {
+            $map{$1} = $2;
+        }
+    }
+    return \%map;
+}
+
+sub start_gpiomon {
+    if ($ENV{PIDAP_FAKE_GPIO}) {
+        log_msg('Using fake GPIO on STDIN');
+        $GPIOMON_FH = IO::Handle->new_from_fd(fileno(STDIN), 'r');
+        return $GPIOMON_FH;
+    }
+    my @cmd = (
+        'gpiomon',
+        '-B', 'pull-up',
+        '-F', '%o %e',
+        '-b',
+        'gpiochip0',
+        @BUTTONS,
+    );
+    log_msg('Starting gpiomon: ' . join(' ', @cmd));
+    my $pid = open3(my $in, $GPIOMON_FH, '>&STDERR', @cmd);
+    die "gpiomon failed: $!" unless defined $pid && $pid > 0;
+    close($in) if $in;
+    $GPIOMON_PID = $pid;
+    return $GPIOMON_FH;
+}
+
+sub check_gpiomon_events {
+    my ($sel, $timeout) = @_;
+    return unless $GPIOMON_FH;
+    my @ready = $sel->can_read($timeout);
+    return unless @ready;
+    for my $fh (@ready) {
+        next unless $fh == $GPIOMON_FH;
+        my $buf;
+        my $n = sysread($GPIOMON_FH, $buf, 256);
+        return unless defined $n && $n > 0;
+        $GPIOMON_BUFFER .= $buf;
+        while ($GPIOMON_BUFFER =~ s/^([^\r\n]+)[\r\n]+//) {
+            my $line = $1;
+            next if $line =~ /^\s*$/;
+            my ($pin, $edge) = split(/\s+/, $line, 2);
+            next unless defined $pin && defined $edge;
+            # libgpiod 1.x prints %e as 0/1; map to the names the rest of
+            # the code expects.
+            $edge = 'falling' if $edge eq '0';
+            $edge = 'rising'  if $edge eq '1';
+            next unless exists $PIN_TO_LABEL{$pin};
+            my $now = Time::HiRes::time();
+            if ($edge eq 'falling' && $now - ($last_fall{$pin} || 0) < $FALL_DEBOUNCE) {
+                next;
+            }
+            if ($edge eq 'rising' && $now - ($last_rise{$pin} || 0) < $RISE_DEBOUNCE) {
+                next;
+            }
+            if ($edge eq 'rising' && $now - ($last_fall{$pin} || 0) < $MIN_PRESS_SEC) {
+                next;
+            }
+            if ($edge eq 'falling') { $last_fall{$pin} = $now; }
+            else                    { $last_rise{$pin} = $now; }
+            my $label = $PIN_TO_LABEL{$pin};
+            wake_or_bump($label);
+            if ($edge eq 'falling') {
+                handle_press($pin, $label);
+            } elsif ($edge eq 'rising') {
+                handle_release($pin, $label);
+            }
+        }
+    }
+}
+
+sub get_play_pid {
+    my $pid = 0;
+    if (open(my $pf, '<', $PID_FILE)) {
+        my $line = <$pf>;
+        close($pf);
+        if (defined $line && $line =~ /(\d+)/) {
+            $pid = int($1);
+        }
+    }
+    return $pid;
+}
+
+sub _killfam_fallback {
+    my ($sig, @pids) = @_;
+    my $sent = 0;
+    for my $pid (@pids) {
+        next unless $pid;
+        # The play pid is a process group leader; kill the whole group.
+        my $n = kill $sig, -$pid;
+        $n = kill $sig, $pid if $n == 0;
+        $sent += $n;
+    }
+    return $sent;
+}
+
+sub _get_children {
+    my ($ppid) = @_;
+    my @children;
+    opendir(my $dh, '/proc') or return @children;
+    while (my $entry = readdir($dh)) {
+        next unless $entry =~ /^\d+$/;
+        if (open(my $st, '<', "/proc/$entry/status")) {
+            while (<$st>) {
+                if (/^PPid:\s*(\d+)/) {
+                    push @children, $entry if $1 == $ppid;
+                    last;
+                }
+            }
+            close($st);
+        }
+    }
+    closedir($dh);
+    return @children;
+}
+
+sub get_pid_parent {
+    my ($pid) = @_;
+    return 0 unless $pid && -r "/proc/$pid/status";
+    if (open(my $st, '<', "/proc/$pid/status")) {
+        while (<$st>) {
+            if (/^PPid:\s*(\d+)/) {
+                close($st);
+                return int($1);
+            }
+        }
+        close($st);
+    }
+    return 0;
+}
+
+sub get_process_cmdline {
+    my ($pid) = @_;
+    return '' unless $pid && -r "/proc/$pid/cmdline";
+    if (open(my $c, '<', "/proc/$pid/cmdline")) {
+        my $cmd = do { local $/; <$c> };
+        close($c);
+        return '' unless defined $cmd;
+        $cmd =~ s/\0/ /g;
+        return $cmd;
+    }
+    return '';
+}
+
+sub get_process_name {
+    my ($pid) = @_;
+    return '' unless $pid && -r "/proc/$pid/comm";
+    if (open(my $c, '<', "/proc/$pid/comm")) {
+        my $name = <$c>;
+        close($c);
+        return '' unless defined $name;
+        chomp $name;
+        return $name;
+    }
+    return '';
+}
+
+sub is_pidap {
+    my ($pid) = @_;
+    return 0 unless $pid && $pid > 1;
+    my $name = get_process_name($pid);
+    return 0 unless $name && ($name eq 'perl' || $name eq 'pidap');
+    my $cmd = get_process_cmdline($pid);
+    return ($cmd =~ /\bpidap\b/) ? 1 : 0;
+}
+
+sub init_pidap_pid {
+    if (@ARGV && $ARGV[0] =~ /^\d+$/) {
+        $pidap_pid = int($ARGV[0]);
+        log_msg("Using pidap PID from command line: $pidap_pid");
+        return;
+    }
+    my $ppid = getppid();
+    if (is_pidap($ppid)) {
+        $pidap_pid = $ppid;
+        log_msg("Using pidap PID from parent: $pidap_pid");
+        return;
+    }
+    log_msg('WARNING: not started by pidap and no pidap PID given; Y/B+Y signals disabled');
+}
+
+sub find_pidap_pid {
+    return $pidap_pid || 0;
+}
+
+sub is_play_paused {
+    my ($pid) = @_;
+    return 0 unless $pid;
+    if (open(my $st, '<', "/proc/$pid/stat")) {
+        my $line = <$st>;
+        close($st);
+        if (defined $line && $line =~ /^\d+\s+\S+\s+(\S)/) {
+            return ($1 eq 'T') ? 1 : 0;
+        }
+    }
+    return 0;
+}
+
+sub toggle_pause {
+    my $pid = get_play_pid();
+    if (!$pid) {
+        log_msg('No play process, cannot toggle pause');
+        return;
+    }
+    my $pause_fifo = get_flag_file('pidap.generated.pause');
+    if (is_play_paused($pid)) {
+        log_msg('Resuming playback');
+        killfam('CONT', $pid);
+        if (open(my $pf, '>', $pause_fifo)) {
+            print $pf "pause=0\n";
+            close($pf);
+        } else {
+            log_msg("Could not write pause=0 to $pause_fifo: $!");
+        }
+    } else {
+        log_msg('Pausing playback');
+        killfam('STOP', $pid);
+        if (open(my $pf, '>', $pause_fifo)) {
+            print $pf "pause=1\n";
+            close($pf);
+        } else {
+            log_msg("Could not write pause=1 to $pause_fifo: $!");
+        }
+    }
+}
+
+sub kill_play {
+    my ($sig) = @_;
+    my $pid = get_play_pid();
+    if (!$pid) {
+        log_msg('kill_play: no play pid');
+        return;
+    }
+    log_msg("kill_play sig=$sig pid=$pid");
+    my $sent = killfam($sig, $pid);
+    log_msg("kill_play sent signal to $sent process(es)");
+    if ($sent == 0) {
+        log_msg("kill_play failed: $!");
+    }
+}
+
+sub run_amixer {
+    my ($direction) = @_;
+    my $sign = ($direction eq 'up') ? '+' : '-';
+    my $cmd = "amixer sset $VOLUME_CONTROL ${VOLUME_STEP}%${sign}";
+    log_msg("Volume $direction: $cmd");
+    my $out = qx{$cmd 2>&1};
+    my $rc = $? >> 8;
+    chomp $out if defined $out;
+    log_msg("amixer rc=$rc out=$out");
+}
+
+sub next_album {
+    log_msg('Next album');
+    kill_play(9);
+    $combo_active_until = Time::HiRes::time() + 0.3;
+}
+
+sub next_track {
+    log_msg('Next track: sending SIGUSR1 to pidap');
+    my $pidap_pid = find_pidap_pid();
+    if ($pidap_pid) {
+        kill 'USR1', $pidap_pid;
+    } else {
+        log_msg('No pidap to signal');
+    }
+}
+
+sub previous_album {
+    log_msg('Previous album');
+    my $flag_file = $PID_FILE;
+    $flag_file =~ s/[^\/]+$//;
+    $flag_file .= '/' if $flag_file && $flag_file !~ m|/$|;
+    $flag_file .= 'pidap.generated.previous';
+    if (open(my $rf, '>', $flag_file)) {
+        print $rf "1\n";
+        close($rf);
+    } else {
+        log_msg("Could not write previous flag: $!");
+    }
+    kill_play(9);
+    $combo_active_until = Time::HiRes::time() + 0.3;
+}
+
+sub current_track_info {
+    my $cf = $PID_FILE;
+    $cf =~ s/[^\/]+$//;
+    $cf .= '/' if $cf && $cf !~ m|/$|;
+    $cf .= 'pidap.generated.current_album';
+    my ($album, $start_offset, $files, $durations) = read_current_album($cf);
+    return undef unless $album && @$durations;
+    my $total = 0;
+    $total += $_ for @$durations;
+    my $now = Time::HiRes::time();
+    my $start = $album_start || $now;
+    my $elapsed = $now - $start;
+    $elapsed = 0 if $elapsed < 0;
+    if ($elapsed >= $total) {
+        my $i = $#$durations;
+        my $track_start = $total - $durations->[$i];
+        return [$i, 0.0, $track_start];
+    }
+    my $cum = 0;
+    for my $i (0 .. $#$durations) {
+        $cum += $durations->[$i];
+        if ($cum > $elapsed) {
+            my $track_time = $elapsed - ($cum - $durations->[$i]);
+            my $track_start = $cum - $durations->[$i];
+            return [$i, $track_time, $track_start];
+        }
+    }
+    my $i = $#$durations;
+    my $track_start = $total - $durations->[$i];
+    return [$i, 0.0, $track_start];
+}
+
+sub previous_or_restart {
+    my $pidap_pid = find_pidap_pid();
+    log_msg("Previous/restart: sending SIGUSR2 to pidap pid=$pidap_pid");
+    if ($pidap_pid) {
+        kill 'USR2', $pidap_pid;
+    } else {
+        log_msg('No pidap to signal');
+    }
+}
+
+sub previous_track {
+    my $flag_file = $PID_FILE;
+    $flag_file =~ s{[^/]+$}{};
+    $flag_file .= '/' if $flag_file && $flag_file !~ m{/$};
+    $flag_file .= 'pidap.generated.previous_track';
+    log_msg("Previous track flag: $flag_file");
+    if (open(my $rf, '>', $flag_file)) {
+        print $rf "1\n";
+        close($rf);
+    } else {
+        log_msg("Could not write previous track flag: $!");
+    }
+    kill_play(9);
+    $combo_active_until = Time::HiRes::time() + 0.3;
+}
+
+sub restart_album {
+    my ($offset) = @_;
+    $offset ||= 0;
+    my $pid = get_play_pid();
+    if (!$pid) {
+        log_msg('Restart album: no play pid');
+        return;
+    }
+    my $flag_file = $PID_FILE;
+    $flag_file =~ s/[^\/]+$//;
+    $flag_file .= '/' if $flag_file && $flag_file !~ m|/$|;
+    $flag_file .= 'pidap.generated.restart';
+    log_msg("Writing restart flag: $flag_file");
+    if (open(my $rf, '>', $flag_file)) {
+        if ($offset > 0) {
+            print $rf "offset=$offset\n";
+        } else {
+            print $rf "1\n";
+        }
+        close($rf);
+    } else {
+        log_msg("Could not write restart flag: $!");
+    }
+    kill_play(9);
+    $combo_active_until = Time::HiRes::time() + 0.3;
+}
+
+sub toggle_lock {
+    $locked = !$locked;
+    log_msg($locked ? 'Locked' : 'Unlocked');
+    set_backlight($locked ? 0 : 1);
+    $backlight_last = Time::HiRes::time();
+}
+
+sub get_bl_power_paths {
+    return $BL_POWER_PATHS if defined $BL_POWER_PATHS;
+    $BL_POWER_PATHS = [ sort glob('/sys/class/backlight/*/bl_power') ];
+    return $BL_POWER_PATHS;
+}
+
+sub set_backlight {
+    my ($on) = @_;
+    $backlight_on = $on ? 1 : 0;
+    my $val = $on ? '0' : '4';
+    my $paths = get_bl_power_paths();
+    if (@$paths) {
+        for my $p (@$paths) {
+            if (open(my $fh, '>', $p)) {
+                print $fh "$val\n";
+                close($fh);
+            } else {
+                log_msg("Backlight $p $val failed: $!");
+            }
+        }
+        log_msg('Backlight ' . ($on ? 'on' : 'off') . ' via bl_power');
+        return;
+    }
+    my $drive = $on ? 'dh' : 'dl';
+    if (system("pinctrl set $BACKLIGHT_PIN op $drive >/dev/null 2>&1") == 0) {
+        log_msg("Backlight $on via pinctrl pin $BACKLIGHT_PIN");
+        return;
+    }
+    if (system("raspi-gpio set $BACKLIGHT_PIN op $drive >/dev/null 2>&1") == 0) {
+        log_msg("Backlight $on via raspi-gpio pin $BACKLIGHT_PIN");
+        return;
+    }
+    log_msg("Backlight $on failed: no bl_power and no pinctrl/raspi-gpio");
+}
+
+sub wake_or_bump {
+    my ($label) = @_;
+    return if $locked;
+    $backlight_last = Time::HiRes::time();
+    if (!$backlight_on) {
+        set_backlight(1);
+        log_msg("Button $label woke backlight");
+    }
+}
+
+sub check_backlight_timeout {
+    return unless $backlight_timer_armed;
+    return if Time::HiRes::time() < $backlight_check_next;
+    $backlight_check_next = Time::HiRes::time() + 1.0;
+    return unless $backlight_on;
+    if (Time::HiRes::time() - $backlight_last >= $BACKLIGHT_TIMEOUT) {
+        set_backlight(0);
+        log_msg('Backlight off due to inactivity');
+    }
+}
+
+sub is_pressed {
+    my ($label) = @_;
+    return $pressed{$label} ? 1 : 0;
+}
+
+sub recently_pressed {
+    my ($label) = @_;
+    return 0 unless $pressed{$label};
+    return (Time::HiRes::time() - $press_time{$label} < 0.25) ? 1 : 0;
+}
+
+sub handle_press {
+    my ($pin, $label) = @_;
+    $pressed{$label} = 1;
+    $press_time{$label} = Time::HiRes::time();
+
+    my $func = $BUTTON_MAP->{$label};
+    log_msg("Button $label pressed, func=$func");
+
+    if ($in_menu) {
+        handle_menu_press($label);
+        return;
+    }
+
+    if ($func eq 'lock') {
+        if (!$locked && (is_pressed('A') || recently_pressed('A'))) {
+            $x_toggled = 1;
+            $x_armed = 0;
+            $y_pending = 0;
+            next_track();
+            $combo_active_until = Time::HiRes::time() + 0.3;
+            return;
+        }
+        if (!$locked && (is_pressed('B') || recently_pressed('B'))) {
+            $x_toggled = 1;
+            $x_armed = 0;
+            $y_pending = 0;
+            previous_track();
+            $combo_active_until = Time::HiRes::time() + 0.3;
+            return;
+        }
+        $y_pending = 0;
+        $x_armed = 1;
+        $x_toggled = 0;
+        return;
+    }
+
+    if ($locked && $func !~ /^(vol_up|vol_down)$/) {
+        log_msg("Button $label ignored (locked)");
+        return;
+    }
+
+    if ($func eq 'next_track' || $func eq 'next') {
+        if (is_pressed('A') || recently_pressed('A')) {
+            $y_pending = 0;
+            next_album();
+        } elsif (is_pressed('B') || recently_pressed('B')) {
+            $y_pending = 0;
+            previous_or_restart();
+        } elsif ($func eq 'next_track') {
+            $y_pending = 1;
+        } else {
+            $y_pending = 0;
+            next_album();
+        }
+        $combo_active_until = Time::HiRes::time() + 0.3;
+        return;
+    }
+
+    if ($func eq 'vol_up' || $func eq 'vol_down') {
+        if (!$locked && (is_pressed('X') || recently_pressed('X'))) {
+            $x_toggled = 1;
+            $x_armed = 0;
+            $y_pending = 0;
+            if ($func eq 'vol_up') {
+                next_track();
+            } else {
+                previous_track();
+            }
+            $combo_active_until = Time::HiRes::time() + 0.3;
+            return;
+        }
+        if (!$locked && $y_pending && Time::HiRes::time() - $press_time{'Y'} < 0.25) {
+            $y_pending = 0;
+            if ($func eq 'vol_up') {
+                next_album();
+            } else {
+                previous_or_restart();
+            }
+            $combo_active_until = Time::HiRes::time() + 0.3;
+            return;
+        }
+        # Volume is applied on release unless a combo fired.
+        return;
+    }
+
+    log_msg("Unknown function $func for button $label");
+}
+
+sub handle_release {
+    my ($pin, $label) = @_;
+    my $was_pressed = $pressed{$label};
+    $pressed{$label} = 0;
+    return unless $was_pressed;
+
+    my $func = $BUTTON_MAP->{$label};
+    log_msg("release $label, func=$func, in_menu=$in_menu, menu_pressed=" . ($menu_pressed{$label} // ''));
+
+    if ($in_menu) {
+        handle_menu_release($label);
+        return;
+    }
+
+    if ($menu_pressed{$label}) {
+        log_msg("release guard for $label (menu press)");
+        $menu_pressed{$label} = 0;
+        $press_time{$label} = 0;
+        return;
+    }
+
+    if ($func eq 'lock') {
+        if (!$x_toggled && !$locked) {
+            toggle_pause();
+        }
+        $x_armed = 0;
+        $x_toggled = 0;
+        return;
+    }
+
+    if ($func eq 'next_track' && $y_pending) {
+        $y_pending = 0;
+        enter_menu();
+        return;
+    }
+
+    if (Time::HiRes::time() < $combo_active_until) {
+        log_msg("Button $label release ignored (combo active)");
+        return;
+    }
+
+    if (is_pressed('X')) {
+        log_msg("Button $label release ignored (X held)");
+        return;
+    }
+
+    if (is_pressed('Y')) {
+        log_msg("Button $label release ignored (Y held)");
+        return;
+    }
+
+    if ($locked && $func !~ /^(vol_up|vol_down)$/) {
+        return;
+    }
+
+    if ($func eq 'next_track') {
+        return;
+    }
+
+    if ($func eq 'vol_up') {
+        my $now = Time::HiRes::time();
+        if ($now - ($last_volume_time{up} || 0) >= $MIN_VOLUME_GAP) {
+            $last_volume_time{up} = $now;
+            run_amixer('up');
+        } else {
+            log_msg("Volume up ignored (debounce)");
+        }
+    } elsif ($func eq 'vol_down') {
+        my $now = Time::HiRes::time();
+        if ($now - ($last_volume_time{down} || 0) >= $MIN_VOLUME_GAP) {
+            $last_volume_time{down} = $now;
+            run_amixer('down');
+        } else {
+            log_msg("Volume down ignored (debounce)");
+        }
+    }
+}
+
+sub check_lock_timeout {
+    return unless $x_armed && !$x_toggled;
+    return unless $pressed{'X'};
+    my $elapsed = Time::HiRes::time() - $press_time{'X'};
+    if ($elapsed >= $LOCK_HOLD_SEC) {
+        $x_toggled = 1;
+        toggle_lock();
+    }
+}
+
+sub check_parent {
+    my $ppid = getppid();
+    if ($ppid == 1) {
+        log_msg('Parent gone, exiting');
+        cleanup();
+        exit(0);
+    }
+}
+
+sub check_play_pid {
+    return if $backlight_timer_armed;
+    my $pid = get_play_pid();
+    return unless $pid;
+    if ($pid != $last_play_pid) {
+        $last_play_pid = $pid;
+        my $cf = $PID_FILE;
+        $cf =~ s/[^\/]+$//;
+        $cf .= '/' if $cf && $cf !~ m|/$|;
+        $cf .= 'pidap.generated.current_album';
+        my @ra = read_current_album($cf);
+        my $offset = $ra[1] || 0;
+        $album_start = Time::HiRes::time() - $offset;
+        log_msg("New play pid $pid, album_start set to $album_start (offset $offset)");
+        $backlight_timer_armed = 1;
+        $backlight_last = Time::HiRes::time();
+        log_msg('Backlight timer armed after first play started');
+    }
+}
+
+sub cleanup {
+    if ($GPIOMON_FH && !$ENV{PIDAP_FAKE_GPIO}) {
+        close($GPIOMON_FH) if $GPIOMON_FH;
+        $GPIOMON_FH = undef;
+    }
+    if ($GPIOMON_PID) {
+        kill('TERM', $GPIOMON_PID);
+    }
+}
+
+sub get_flag_file {
+    my ($name) = @_;
+    my $ff = $PID_FILE;
+    $ff =~ s{[^/]+$}{};
+    $ff .= '/' if $ff && $ff !~ m{/$};
+    $ff .= $name;
+    return $ff;
+}
+
+sub _abandon_menu {
+    my $mf = get_flag_file('pidap.generated.menu_mode');
+    unlink($mf) if -e $mf;
+    $in_menu = 0;
+    $last_menu_action = '';
+}
+
+sub enter_menu {
+    log_msg('Entering menu mode');
+    $last_menu_action = '';
+    my $mf = get_flag_file('pidap.generated.menu_mode');
+    if (open(my $fh, '>', $mf)) {
+        print $fh "1\n";
+        close($fh);
+    } else {
+        log_msg("Could not create $mf: $!");
+    }
+    if (write_menu_action('show')) {
+        $in_menu = 1;
+    } else {
+        log_msg('Menu reader not available, aborting menu mode');
+    }
+}
+
+sub write_menu_action {
+    my ($action) = @_;
+    my $fifo = get_flag_file('pidap.generated.menu_in');
+    my $fh;
+    unless (sysopen($fh, $fifo, O_WRONLY|O_NONBLOCK)) {
+        log_msg("Could not open menu_in FIFO $fifo for $action: $!");
+        _abandon_menu();
+        return 0;
+    }
+    my $data = "$action\n";
+    my $n = syswrite($fh, $data);
+    close($fh);
+    if (!defined $n || $n != length($data)) {
+        log_msg("Short write for menu action $action: $!");
+        _abandon_menu();
+        return 0;
+    }
+    return 1;
+}
+
+sub handle_menu_press {
+    my ($label) = @_;
+    my %action = (A => 'up', B => 'down', X => 'select', Y => 'back');
+    my $act = $action{$label};
+    return unless $act;
+    my $now = Time::HiRes::time();
+    if ($now - ($last_menu_action_time{$act} || 0) < $MIN_MENU_ACTION_GAP) {
+        log_msg("Menu: $label -> $act ignored (debounce)");
+        return;
+    }
+    $last_menu_action_time{$act} = $now;
+    log_msg("Menu: $label -> $act");
+    write_menu_action($act);
+    $last_menu_action = $act;
+    $last_menu_repeat = $now + $MENU_REPEAT_INITIAL;
+    $menu_pressed{$label} = 1;
+}
+
+sub handle_menu_release {
+    my ($label) = @_;
+    return unless $in_menu;
+    $last_menu_action = '';
+    $pressed{$label} = 0;
+    $press_time{$label} = 0;
+    $menu_pressed{$label} = 0;
+}
+
+sub check_menu_timeout {
+    return if $in_menu;
+    return unless $y_pending;
+    return unless $pressed{'Y'};
+    my $elapsed = Time::HiRes::time() - $press_time{'Y'};
+    if ($elapsed >= $MENU_HOLD_SEC) {
+        $y_pending = 0;
+        enter_menu();
+    }
+}
+
+sub check_menu_state {
+    return unless $in_menu;
+    my $mf = get_flag_file('pidap.generated.menu_mode');
+    if (!-e $mf) {
+        log_msg("check_menu_state: menu_mode gone, leaving menu");
+        $in_menu = 0;
+        $last_menu_action = '';
+        $last_menu_repeat = 0;
+    }
+}
+
+sub check_menu_repeat {
+    return unless $in_menu;
+    return unless $last_menu_action =~ /^(up|down)$/;
+    my $label = ($last_menu_action eq 'up') ? 'A' : 'B';
+    return unless $pressed{$label};
+    my $now = Time::HiRes::time();
+    if ($now >= $last_menu_repeat) {
+        write_menu_action($last_menu_action);
+        $last_menu_repeat = $now + $MENU_REPEAT_INTERVAL;
+    }
+}
+
+sub handle_signal {
+    my ($sig) = @_;
+    log_msg("Caught $sig, cleaning up");
+    cleanup();
+    exit(0);
+}
+
+$SIG{INT} = \&handle_signal;
+$SIG{TERM} = \&handle_signal;
+$SIG{HUP} = 'IGNORE';
+
+log_msg("pidap-buttons starting, PID=$$");
+log_msg("Button map: " . join(',', map { "$_." . ($BUTTON_MAP->{$_} || '') } @LABELS));
+
+my $gpiomon_fh = start_gpiomon();
+my $sel = IO::Select->new($gpiomon_fh);
+
+init_pidap_pid();
+set_backlight(1);
+
+my $MAX_IDLE = $ENV{PIDAP_MAX_IDLE} || 0.05;
+
+while (1) {
+    my $now = Time::HiRes::time();
+    my $next = $now + $MAX_IDLE;
+
+    if ($x_armed && !$x_toggled && $pressed{'X'}) {
+        my $t = $press_time{'X'} + $LOCK_HOLD_SEC;
+        $next = $t if $t < $next;
+    }
+
+    if (!$in_menu && $y_pending && $pressed{'Y'}) {
+        my $t = $press_time{'Y'} + $MENU_HOLD_SEC;
+        $next = $t if $t < $next;
+    }
+
+    if ($in_menu && $last_menu_action =~ /^(up|down)$/) {
+        my $label = ($last_menu_action eq 'up') ? 'A' : 'B';
+        if ($pressed{$label} && $last_menu_repeat) {
+            my $t = $last_menu_repeat;
+            $next = $t if $t < $next;
+        }
+    }
+
+    if ($backlight_timer_armed && $backlight_check_next) {
+        my $t = $backlight_check_next;
+        $next = $t if $t < $next;
+    }
+
+    my $timeout = $next - $now;
+    $timeout = 0 if $timeout < 0;
+
+    # Block on gpiomon until an event or the next scheduled timeout.
+    check_gpiomon_events($sel, $timeout);
+
+    check_parent();
+    check_lock_timeout();
+    check_menu_state();
+    check_menu_repeat();
+    check_play_pid();
+    check_backlight_timeout();
+}
+
+exit(0);
