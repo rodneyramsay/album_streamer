@@ -9,6 +9,29 @@ use Time::HiRes;
 use PIDAPAlbum qw(get_album_offsets write_current_album read_current_album build_resume_cmd);
 use PIDAPRand;
 
+# Natural (alphanumeric) comparison: numbers compare numerically, letters
+# case-insensitively, so e.g. "2" < "10" and "A" == "a".
+sub natural_cmp {
+    my ($x, $y) = @_;
+    my @xs = $x =~ /([0-9]+|[^0-9]+)/g;
+    my @ys = $y =~ /([0-9]+|[^0-9]+)/g;
+    while (@xs && @ys) {
+        my $xc = shift @xs;
+        my $yc = shift @ys;
+        if ($xc =~ /^\d+$/ && $yc =~ /^\d+$/) {
+            my $n = $xc <=> $yc;
+            return $n if $n;
+        } else {
+            my $n = lc($xc) cmp lc($yc);
+            return $n if $n;
+        }
+    }
+    return @xs <=> @ys;
+}
+
+sub natural_sort { sort { natural_cmp($a, $b) } @_ }
+
+
 $SIG{CHLD} = 'IGNORE';
 unless (-t STDOUT || $ENV{PIDAP_DEBUG}) {
    open(STDOUT, '>', '/dev/null') or die "cannot redirect STDOUT: $!";
@@ -158,7 +181,7 @@ while($run) {
    # Check category directories across all music roots.
    #
    for my $mount (@mounts) {
-   foreach $category (split /\n/, `ls $mount/`) {
+   foreach $category (natural_sort(split /\n/, `ls $mount/`)) {
       chomp($category);
       next unless -d "$mount/$category";
 
@@ -179,7 +202,7 @@ while($run) {
       #
       # Check artist directories
       #
-      foreach $artist (split /\n/, `ls $mount/$category/`) {
+      foreach $artist (natural_sort(split /\n/, `ls $mount/$category/`)) {
 	 chomp($artist);
 	 next unless -d "$mount/$category/$artist";
 
@@ -203,7 +226,7 @@ while($run) {
 	 #
 	 # Check album directories
 	 #
-	 foreach $album (split /\n/, `ls $mount/$category/$artist | sort`) {
+	 foreach $album (natural_sort(split /\n/, `ls $mount/$category/$artist`)) {
 	    print(".");
 
 	    chomp($album);
@@ -250,7 +273,7 @@ while($run) {
 	  for my $ext (@exts) {
 	     push @tracks, glob("${play_path}*/*.$ext");
 	  }
-	  @tracks = sort @tracks;
+	  @tracks = natural_sort(@tracks);
 	
 	  next unless @tracks;
 	  my $key = "$artist/$album";
@@ -272,7 +295,7 @@ while($run) {
    #
    my %uniq_categories = map { $_ => 1 } @categories;
    print("Discovered " . scalar(@play_albums) . " albums in " . scalar(keys %uniq_categories) . " top-level categories\n");
-   print("Top-level categories: " . join(', ', sort keys %uniq_categories) . "\n");
+   print("Top-level categories: " . join(', ', natural_sort(keys %uniq_categories)) . "\n");
 
    #
    # Start streaming albums
@@ -318,7 +341,7 @@ while($run) {
       }
 
       if ($sorted_playlist) {
-         @play_albums = sort @play_albums;
+         @play_albums = sort { natural_cmp((split m{/}, $a)[-1], (split m{/}, $b)[-1]) } @play_albums;
       } else {
          @play_albums = &rand_array(@play_albums);
       }
