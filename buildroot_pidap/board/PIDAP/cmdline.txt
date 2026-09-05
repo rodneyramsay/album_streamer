@@ -1,1 +1,1 @@
-root=/dev/nfs rw rootdelay=3 ip=192.168.0.31::192.168.0.69:255.255.0.0:pidap:eth0:off nfsroot=192.168.0.69:/srv/nfs/pidap,v3,tcp console=ttyAMA0,115200 smsc95xx.turbo_mode=0 coherent_pool=2M fbcon=rotate:3 fbcon=map:1 fbcon=font:VGA8x8 vt.global_cursor_default=0
+root=/dev/nfs rw rootdelay=3 ip=192.168.0.31::192.168.0.69:255.255.0.0:pidap:eth0:off nfsroot=192.168.0.69:/srv/nfs/pidap,v3,tcp console=ttyAMA0,115200 smsc95xx.turbo_mode=0 coherent_pool=2M fbcon=rotate:3 fbcon=map:1 fbcon=font:VGA8x8 consoleblank=0 vt.global_cursor_default=0
