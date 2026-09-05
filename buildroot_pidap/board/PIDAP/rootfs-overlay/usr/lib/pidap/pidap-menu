@@ -14,6 +14,7 @@ my $MENU_COLUMNS = 24;
 my $MENU_ITEM_MAX  = $MENU_COLUMNS - 1;
 my $HSCROLL_INTERVAL = 0.35;
 my $NAV_COOLDOWN = $ENV{PIDAP_MENU_NAV_COOLDOWN} || 0.15;
+my $font_set = 0;
 
 my $RUN_DIR = $ENV{PIDAP_RUN_DIR};
 if (!$RUN_DIR && $ENV{PIDAP_PID_FILE}) {
@@ -127,6 +128,10 @@ sub display_menu_list {
     my $item_max = $MENU_ITEM_MAX;
 
     if (open(my $fh, '>', '/dev/tty1')) {
+        if (!$font_set) {
+            system('setfont -C /dev/tty1 /usr/share/consolefonts/Uni2-Terminus18x10.psf.gz 2>/dev/null');
+            $font_set = 1;
+        }
         if ($full) {
             if (!$title && $total == 0) {
                 print $fh "\e[2J\e[H";
