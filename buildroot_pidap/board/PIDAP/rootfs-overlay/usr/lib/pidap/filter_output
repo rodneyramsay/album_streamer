@@ -41,14 +41,15 @@ while(<>) {
 	    # until pidap actually starts playing; after that scroll normally.
 	    if ($first_track) {
 	        print "\e[2J\e[H";
+	        system('setfont -C /dev/tty1 /usr/share/consolefonts/Uni2-Terminus18x10.psf.gz 2>/dev/null');
 	        $first_track = 0;
 	    }
 
-	    # Print 3-line track block without a leading blank so the track name
-	    # stays on the last visible line and old blocks scroll down cleanly.
+	    # Print 3-line track block with a trailing blank.
 	    print "$artist\n";
 	    print "${cue_num}\/${last_num}: ${album}\n";
 	    print "$track\n";
+            print "\n";
 
 	    if (open(my $df, '>', "$RUN_DIR/pidap.generated.display")) {
 	        print $df "\n$artist\n";
