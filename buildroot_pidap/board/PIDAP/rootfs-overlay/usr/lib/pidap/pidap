@@ -893,6 +893,7 @@ sub play_albums() {
  my (@albums) = @_;
  my $volume_initialized = 0;
  my %album_offsets_cache = ();
+ my $reload_file = "$RUN_DIR/pidap.generated.reload";
  my $menu_out_fh;
  my $menu_out_fifo = "$RUN_DIR/pidap.generated.menu_out";
  if (-e $menu_out_fifo && !-p $menu_out_fifo) {
@@ -940,6 +941,10 @@ sub play_albums() {
  $ii = 0 if $ii < 0 || $ii > $#albums;
 
  while ($ii <= $#albums) {
+  if (-e $reload_file) {
+     unlink($reload_file) if -e $reload_file;
+     last;
+  }
   if ($resume_album) {
    for my $i (0 .. $#albums) {
     if ($albums[$i] eq $resume_album) {

@@ -37,6 +37,7 @@ my $menu_mode_file      = "$RUN_DIR/pidap.generated.menu_mode";
 my $menu_in_fifo        = "$RUN_DIR/pidap.generated.menu_in";
 my $menu_out_fifo       = "$RUN_DIR/pidap.generated.menu_out";
 my $play_pid_file       = "$RUN_DIR/pidap.generated.play_pid";
+my $reload_file         = "$RUN_DIR/pidap.generated.reload";
 
 sub log_warn {
     my ($msg) = @_;
@@ -44,6 +45,12 @@ sub log_warn {
 }
 
 sub restart_playback {
+    if (open(my $rf, '>', $reload_file)) {
+        print $rf "1\n";
+        close($rf);
+    } else {
+        log_warn("cannot create $reload_file: $!");
+    }
     return unless -r $play_pid_file;
     if (open(my $pf, '<', $play_pid_file)) {
         my $pid = <$pf>;
@@ -51,7 +58,7 @@ sub restart_playback {
         chomp($pid) if defined $pid;
         if ($pid && $pid =~ /^\d+$/ && kill(0, $pid)) {
             # Kill the current play process; pidap will see it exit and
-            # restart from the beginning of the newly generated playlist.
+            # reload the newly generated playlist.
             kill('TERM', $pid);
         }
     }
@@ -491,8 +498,8 @@ sub run_menu {
                     last;
                 } else {
                     &display_menu_list('Generating...', ['Generate Alpha-numeric Playlist'], 0, 13);
-                    system('perl', "$FindBin::Bin/pidap-playlist", '-s') == 0
-                        or log_warn('pidap-playlist -s failed');
+                    system('perl', "$FindBin::Bin/pidap-playlist", '-r', '-s') == 0
+                        or log_warn('pidap-playlist -r -s failed');
                     &display_menu_list('Done', ['Alpha-Numeric Playlist'], 0, 13);
                     sleep 1;
                     &restart_playback();
