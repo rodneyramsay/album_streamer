@@ -135,6 +135,24 @@ sdcard-data: defconfig check-data check-card
 	-sudo fsck.vfat -a $(CARD)4 2>/dev/null || sudo fsck.fat -a $(CARD)4 2>/dev/null || true
 	sudo CARD=$(CARD) ./flash-sdcard.sh data
 
+# Mount the rootfs partition and copy updated PIDAP scripts from the repo
+# onto the card.  Use CARD=/dev/sdc (or export CARD) to target the right reader.
+sdcard-update: check-card
+	@set -e; \
+	mp=$$(mktemp -d /tmp/pidap-root.XXXXXX); \
+	for p in 1 2 3 4; do grep -q "^$(CARD)$$p " /proc/mounts && sudo umount $(CARD)$$p 2>/dev/null || true; done; \
+	sudo mount $(CARD)2 "$${mp}"; \
+	echo "Copying updated pidap scripts to $(CARD)2:/usr/lib/pidap/..."; \
+	sudo cp -f "$(BR2_EXTERNAL)/../pidap" "$${mp}/usr/lib/pidap/pidap"; \
+	sudo cp -f "$(BR2_EXTERNAL)/../filter_output" "$${mp}/usr/lib/pidap/filter_output"; \
+	sudo cp -Rf "$(BR2_EXTERNAL)/../lib/." "$${mp}/usr/lib/pidap/lib/"; \
+	sudo cp -f $(BR2_EXTERNAL)/board/PIDAP/rootfs-overlay/usr/lib/pidap/pidap-* "$${mp}/usr/lib/pidap/"; \
+	sudo chmod +x "$${mp}/usr/lib/pidap/pidap" "$${mp}/usr/lib/pidap/filter_output" "$${mp}/usr/lib/pidap/pidap-"*; \
+	sync; \
+	sudo umount "$${mp}"; \
+	rmdir "$${mp}" 2>/dev/null || true; \
+	echo "Done. $(CARD) unmounted."
+
 # Prepare a card.  The user-data image is sized to the selected music only.
 # The user-data partition uses the rest of the card by default; cap it with
 # MAX_USERDATA_G=<GiB> if you want a smaller partition.
