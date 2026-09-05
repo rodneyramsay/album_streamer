@@ -135,18 +135,13 @@ sdcard-data: defconfig check-data check-card
 	-sudo fsck.vfat -a $(CARD)4 2>/dev/null || sudo fsck.fat -a $(CARD)4 2>/dev/null || true
 	sudo CARD=$(CARD) ./flash-sdcard.sh data
 
-# Prepare a card with a sensibly small user-data partition.  If
-# MAX_USERDATA_G is 0 (the default) the cap is computed from the card size.
+# Prepare a card.  The user-data image is sized to the selected music only.
+# The user-data partition uses the rest of the card by default; cap it with
+# MAX_USERDATA_G=<GiB> if you want a smaller partition.
 sdcard-prep: check
-	@cap=$(MAX_USERDATA_G); \
-	if [ "$$cap" = "0" ]; then \
-		size=$$(sudo blockdev --getsize64 $(CARD)); \
-		gb=$$(( size / 1024 / 1024 / 1024 )); \
-		cap=$$(( gb / 4 )); \
-		[ $$cap -lt 1 ] && cap=1; \
-		[ $$cap -gt 4 ] && cap=4; \
-		echo "Detected $${gb} GiB card; capping user-data at $${cap} GiB"; \
+	@if [ -n "$(MAX_USERDATA_G)" ] && [ "$(MAX_USERDATA_G)" != "0" ]; then \
+		echo "Using requested user-data cap: $(MAX_USERDATA_G) GiB"; \
 	else \
-		echo "Using requested user-data cap: $${cap} GiB"; \
+		echo "Using rest of SD card for user-data partition (image sized to music)"; \
 	fi; \
-	$(MAKE) CARD=$(CARD) MAX_USERDATA_G=$$cap MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)" sdcard
+	$(MAKE) CARD=$(CARD) MAX_USERDATA_G=$(MAX_USERDATA_G) MUSIC_SOURCE="$(MUSIC_SOURCE)" MUSIC_INCLUDE="$(MUSIC_INCLUDE)" sdcard
