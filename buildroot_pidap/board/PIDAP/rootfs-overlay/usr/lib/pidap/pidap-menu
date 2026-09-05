@@ -459,6 +459,7 @@ sub run_menu {
                 if ($selected == 0) {
                     # Browse Playlist: show the album/track list
                     log_warn("Browse Playlist selected, entering playlist album list");
+                    $in_playlist_menu = 0;
                     $in_playlist = 1;
                     $level = 2;
                     $playlist_album_idx = $current_album_idx;
